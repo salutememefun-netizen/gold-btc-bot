@@ -5,7 +5,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
 # TELEGRAM BOT TOKEN
-# Ambil token daripada Environment Variable BOT_TOKEN
 # ============================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -52,7 +51,7 @@ def get_btc_price():
 
 
 # ============================================================
-# SIGNAL SIMPLE
+# SIGNAL
 # ============================================================
 
 def make_signal(price, name):
@@ -60,7 +59,6 @@ def make_signal(price, name):
     if price is None:
         return f"❌ Gagal ambil harga {name}"
 
-    # Zone kasar
     entry_low = price * 0.997
     entry_high = price * 1.003
 
@@ -76,8 +74,7 @@ def make_signal(price, name):
         f"🔴 Stop Loss: `${sl:,.2f}`\n"
         f"🎯 TP1: `${tp1:,.2f}`\n"
         f"🎯 TP2: `${tp2:,.2f}`\n\n"
-        f"_Nota: Ini zone kasar (0.3%–1.8%). "
-        f"Bukan nasihat kewangan._"
+        f"_Nota: Ini zone kasar. Bukan nasihat kewangan._"
     )
 
 
@@ -89,7 +86,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "🤖 *Gold & BTC Signal Bot*\n\n"
-        "Command:\n"
+        "Command:\n\n"
         "/price – Harga semasa\n"
         "/signal gold – Signal Gold\n"
         "/signal btc – Signal BTC\n"
@@ -136,32 +133,30 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
-
         await update.message.reply_text(
             "Contoh:\n"
             "/signal gold\n"
             "/signal btc"
         )
-
         return
 
     pair = context.args[0].lower()
 
     if pair == "gold":
 
-        price = get_gold_price()
+        current_price = get_gold_price()
 
         msg = make_signal(
-            price,
+            current_price,
             "GOLD (XAUUSD)"
         )
 
     elif pair == "btc":
 
-        price = get_btc_price()
+        current_price = get_btc_price()
 
         msg = make_signal(
-            price,
+            current_price,
             "BTC"
         )
 
@@ -205,17 +200,12 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
-    # Check BOT_TOKEN
     if not TOKEN:
 
         print("❌ BOT_TOKEN tidak dijumpai!")
-        print("")
-        print("Pastikan Environment Variable dibuat:")
-        print("Variable Name : BOT_TOKEN")
-        print("Value         : Token Telegram daripada BotFather")
-        print("")
-        print("⚠️ Jangan letakkan token Telegram dalam kod GitHub.")
-
+        print("Pastikan Environment Variable:")
+        print("Variable Name: BOT_TOKEN")
+        print("Value: Token daripada BotFather")
         return
 
     print("✅ BOT_TOKEN berjaya dibaca!")
@@ -230,7 +220,7 @@ def main():
             .build()
         )
 
-        # Commands
+        # Register commands
         app.add_handler(
             CommandHandler("start", start)
         )
@@ -248,9 +238,13 @@ def main():
         )
 
         print("🚀 Bot sedang berjalan!")
-        print("📡 Telegram polling aktif...")
+        print("📡 Telegram polling aktif!")
 
-        app.run_polling()
+        # Abaikan update lama
+        # supaya bot bermula dengan keadaan bersih.
+        app.run_polling(
+            drop_pending_updates=True
+        )
 
     except Exception as e:
 
@@ -258,7 +252,7 @@ def main():
 
 
 # ============================================================
-# RUN
+# START BOT
 # ============================================================
 
 if __name__ == "__main__":
