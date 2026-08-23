@@ -1,8 +1,6 @@
 import os
 import logging
 import requests
-from datetime import datetime, timezone
-
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -11,7 +9,7 @@ from telegram.ext import (
 )
 
 # ============================================================
-# GOLD & BTC SIGNAL BOT V6.1
+# GOLD & BTC SIGNAL BOT V6.1 FIXED
 # ============================================================
 
 logging.basicConfig(
@@ -161,6 +159,105 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
 
 
 # ============================================================
+# LIVE PRICE
+# ============================================================
+
+def get_live_price(asset):
+
+    for symbol in SYMBOLS.get(asset, []):
+
+        try:
+
+            url = (
+                "https://query1.finance.yahoo.com/"
+                f"v8/finance/chart/{symbol}"
+            )
+
+            params = {
+                "interval": "1m",
+                "range": "1d",
+                "includePrePost": "true",
+            }
+
+            response = SESSION.get(
+                url,
+                params=params,
+                timeout=15,
+            )
+
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+
+            result = (
+                data
+                .get("chart", {})
+                .get("result")
+            )
+
+            if not result:
+                continue
+
+            result = result[0]
+
+            meta = result.get(
+                "meta",
+                {}
+            )
+
+            price = meta.get(
+                "regularMarketPrice"
+            )
+
+            if price is None:
+
+                timestamps = result.get(
+                    "timestamp",
+                    []
+                )
+
+                quote_list = (
+                    result
+                    .get("indicators", {})
+                    .get("quote", [])
+                )
+
+                if (
+                    timestamps
+                    and quote_list
+                ):
+
+                    closes = quote_list[0].get(
+                        "close",
+                        []
+                    )
+
+                    for close in reversed(closes):
+
+                        if close is not None:
+
+                            price = close
+                            break
+
+            if price is not None:
+
+                return float(price), symbol
+
+        except Exception as e:
+
+            logger.warning(
+                "Live price error %s: %s",
+                symbol,
+                e,
+            )
+
+            continue
+
+    return None, None
+
+
+# ============================================================
 # CANDLE FALLBACK
 # ============================================================
 
@@ -275,6 +372,10 @@ def rsi(values, period=14):
         ) / period
 
     if avg_loss == 0:
+
+        if avg_gain == 0:
+            return 50.0
+
         return 100.0
 
     rs = avg_gain / avg_loss
@@ -497,6 +598,9 @@ def adx(candles, period=14):
 
 def get_swings(candles, lookback=30):
 
+    if not candles:
+        return None, None
+
     if len(candles) < lookback:
         lookback = len(candles)
 
@@ -616,8 +720,6 @@ def candle_confirmation(candles):
     ):
         return "BEARISH ENGULFING"
 
-    # Strong bullish candle
-
     body = abs(
         cur["close"]
         - cur["open"]
@@ -668,9 +770,6 @@ def liquidity_sweep(candles):
         for c in previous
     )
 
-    # Sweep sell-side liquidity
-    # Price takes low then closes back above it
-
     if (
         current["low"]
         < liquidity_low
@@ -682,9 +781,6 @@ def liquidity_sweep(candles):
             "BULLISH SWEEP",
             liquidity_low,
         )
-
-    # Sweep buy-side liquidity
-    # Price takes high then closes back below it
 
     if (
         current["high"]
@@ -847,14 +943,10 @@ def calculate_bias(
 
     if rsi_value is not None:
 
-        if (
-            50 <= rsi_value < 70
-        ):
+        if 50 <= rsi_value < 70:
             buy += 1
 
-        elif (
-            30 < rsi_value < 50
-        ):
+        elif 30 < rsi_value < 50:
             sell += 1
 
     if buy > sell:
@@ -881,57 +973,20 @@ def build_entry_zone(
     if atr_value is None or atr_value <= 0:
         atr_value = price * 0.005
 
-    # Priority:
-    # BOS / sweep level is preferred.
-    # Otherwise use current ATR zone.
+    reference = (
+        bos_price
+        if bos_price is not None
+        else sweep_price
+    )
 
-    if direction == "BUY":
+    if reference is None:
+        reference = price
 
-        reference = (
-            bos_price
-            if bos_price is not None
-            else sweep_price
-        )
-
-        if reference is None:
-            reference = price
-
-        low = reference - (
-            atr_value * 0.20
-        )
-
-        high = reference + (
-            atr_value * 0.20
-        )
-
-        return low, high
-
-    if direction == "SELL":
-
-        reference = (
-            bos_price
-            if bos_price is not None
-            else sweep_price
-        )
-
-        if reference is None:
-            reference = price
-
-        low = reference - (
-            atr_value * 0.20
-        )
-
-        high = reference + (
-            atr_value * 0.20
-        )
-
-        return low, high
-
-    zone = atr_value * 0.25
+    zone = atr_value * 0.20
 
     return (
-        price - zone,
-        price + zone,
+        reference - zone,
+        reference + zone,
     )
 
 
@@ -1074,10 +1129,6 @@ def analyze_asset(asset):
         candles_15m
     )
 
-    # ========================================================
-    # BOS LEVEL
-    # ========================================================
-
     bos_price = None
 
     if bos == "BULLISH BOS":
@@ -1216,6 +1267,15 @@ def analyze_asset(asset):
     )
 
     # ========================================================
+    # SAFE ATR
+    # ========================================================
+
+    safe_atr = atr_value
+
+    if safe_atr is None or safe_atr <= 0:
+        safe_atr = price * 0.005
+
+    # ========================================================
     # SL / TP
     # ========================================================
 
@@ -1231,14 +1291,18 @@ def analyze_asset(asset):
             else swing_low
         )
 
+        if protective_level is None:
+            protective_level = price - safe_atr
+
         sl = protective_level - (
-            atr_value * 0.30
+            safe_atr * 0.30
         )
 
         risk = price - sl
 
         if risk <= 0:
-            risk = atr_value
+            risk = safe_atr
+            sl = price - risk
 
         tp1 = price + (
             risk * 1.5
@@ -1256,14 +1320,18 @@ def analyze_asset(asset):
             else swing_high
         )
 
+        if protective_level is None:
+            protective_level = price + safe_atr
+
         sl = protective_level + (
-            atr_value * 0.30
+            safe_atr * 0.30
         )
 
         risk = sl - price
 
         if risk <= 0:
-            risk = atr_value
+            risk = safe_atr
+            sl = price + risk
 
         tp1 = price - (
             risk * 1.5
@@ -1280,43 +1348,24 @@ def analyze_asset(asset):
     reasons = []
 
     if bias == "BUY":
-
-        reasons.append(
-            "Bias BUY"
-        )
+        reasons.append("Bias BUY")
 
     elif bias == "SELL":
-
-        reasons.append(
-            "Bias SELL"
-        )
+        reasons.append("Bias SELL")
 
     if liquidity != "NONE":
-
-        reasons.append(
-            liquidity
-        )
+        reasons.append(liquidity)
 
     if candle_confirm != "NONE":
-
-        reasons.append(
-            candle_confirm
-        )
+        reasons.append(candle_confirm)
 
     if bos != "NONE":
-
-        reasons.append(
-            bos
-        )
+        reasons.append(bos)
 
     if retest != "NONE":
-
-        reasons.append(
-            retest
-        )
+        reasons.append(retest)
 
     if not reasons:
-
         reasons.append(
             "Belum ada confirmation"
         )
@@ -1414,7 +1463,7 @@ def analyze_asset(asset):
 
 
 # ============================================================
-# FORMAT
+# FORMAT SIGNAL
 # ============================================================
 
 def format_signal(asset, result):
@@ -1440,17 +1489,21 @@ def format_signal(asset, result):
     price = result["price"]
 
     direction = result["direction"]
-
     bias = result["bias"]
-
     confidence = result["confidence"]
 
     rsi_value = result["rsi"]
     adx_value = result["adx"]
 
-    # ========================================================
-    # HEADER
-    # ========================================================
+    if rsi_value is None:
+        rsi_text = "N/A"
+    else:
+        rsi_text = f"{rsi_value:.1f}"
+
+    if adx_value is None:
+        adx_text = "N/A"
+    else:
+        adx_text = f"{adx_value:.1f}"
 
     message = (
         f"{emoji} *{name} SIGNAL V6.1*\n\n"
@@ -1483,49 +1536,29 @@ def format_signal(asset, result):
         f"💯 *Confidence:* `{confidence}%`\n"
         f"📐 *Structure:* `{result['structure']}`\n"
         f"🕐 *1H Trend:* `{result['h1_trend']}`\n"
-        f"📊 *RSI:* `{rsi_value:.1f}`\n"
-        f"📈 *ADX:* `{adx_value:.1f}`\n\n"
+        f"📊 *RSI:* `{rsi_text}`\n"
+        f"📈 *ADX:* `{adx_text}`\n\n"
     )
-
-    # ========================================================
-    # LIQUIDITY
-    # ========================================================
 
     message += (
         "💧 *LIQUIDITY*\n"
         f"`{result['liquidity']}`\n\n"
     )
 
-    # ========================================================
-    # CANDLE
-    # ========================================================
-
     message += (
         "🕯 *CANDLE CONFIRMATION*\n"
         f"`{result['candle_confirmation']}`\n\n"
     )
-
-    # ========================================================
-    # BOS
-    # ========================================================
 
     message += (
         "📐 *BREAK OF STRUCTURE*\n"
         f"`{result['bos']}`\n\n"
     )
 
-    # ========================================================
-    # RETEST
-    # ========================================================
-
     message += (
         "🔄 *RETEST*\n"
         f"`{result['retest']}`\n\n"
     )
-
-    # ========================================================
-    # ENTRY TRIGGER
-    # ========================================================
 
     if direction == "BUY":
 
@@ -1543,7 +1576,7 @@ def format_signal(asset, result):
 
         if bias == "BUY":
 
-            if result["liquidity"] == "NONE":
+            if result["liquidity"] != "BULLISH SWEEP":
 
                 trigger_text = (
                     "🟡 WAIT FOR BULLISH SWEEP"
@@ -1569,7 +1602,7 @@ def format_signal(asset, result):
 
         elif bias == "SELL":
 
-            if result["liquidity"] == "NONE":
+            if result["liquidity"] != "BEARISH SWEEP":
 
                 trigger_text = (
                     "🟡 WAIT FOR BEARISH SWEEP"
@@ -1604,20 +1637,12 @@ def format_signal(asset, result):
         f"{trigger_text}\n\n"
     )
 
-    # ========================================================
-    # WATCH / ENTRY ZONE
-    # ========================================================
-
     message += (
         "🟡 *ENTRY / WATCH ZONE*\n"
         f"`{result['entry_low']:,.2f}"
         f" – "
         f"{result['entry_high']:,.2f}`\n\n"
     )
-
-    # ========================================================
-    # SWINGS
-    # ========================================================
 
     message += (
         "📉 *SWING LOW*\n"
@@ -1626,10 +1651,6 @@ def format_signal(asset, result):
         "📈 *SWING HIGH*\n"
         f"`{result['swing_high']:,.2f}`\n\n"
     )
-
-    # ========================================================
-    # SL / TP
-    # ========================================================
 
     if direction != "WAIT":
 
@@ -1643,10 +1664,6 @@ def format_signal(asset, result):
             "🎯 *TP2*\n"
             f"`{result['tp2']:,.2f}`\n\n"
         )
-
-    # ========================================================
-    # ANALYSIS
-    # ========================================================
 
     message += "🧠 *ANALYSIS*\n"
 
@@ -1665,10 +1682,6 @@ def format_signal(asset, result):
             message += (
                 f"• Tunggu {item}\n"
             )
-
-    # ========================================================
-    # SOURCE
-    # ========================================================
 
     message += (
         "\n📡 *DATA SOURCE*\n"
@@ -1913,7 +1926,7 @@ def main():
 
     print("")
     print("==========================================")
-    print("🤖 GOLD & BTC SIGNAL BOT V6.1")
+    print("🤖 GOLD & BTC SIGNAL BOT V6.1 FIXED")
     print("==========================================")
 
     if not TOKEN:
