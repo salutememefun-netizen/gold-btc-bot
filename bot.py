@@ -11,24 +11,8 @@ from telegram.ext import (
 )
 
 # ============================================================
-# GOLD & BTC SIGNAL BOT V5.3
-# ============================================================
-# FEATURES
-# 15M + 1H
-# EMA20 / EMA50
-# RSI
-# ATR
-# ADX
-# Market Structure
-# Liquidity Sweep
-# Candle Confirmation
-# Support / Resistance
-# Swing High / Swing Low
-# Watch Zone
-# Entry Trigger
-# Entry Zone
-# SL / TP
-# No Auto Trading
+# GOLD & BTC SIGNAL BOT V5.4
+# ENTRY TRIGGER ENGINE
 # ============================================================
 
 logging.basicConfig(
@@ -73,30 +57,22 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
             url,
             params=params,
             headers={
-                "User-Agent":
-                "Mozilla/5.0"
+                "User-Agent": "Mozilla/5.0"
             },
             timeout=20
         )
 
         if response.status_code != 200:
-
             logger.warning(
-                f"{symbol} HTTP "
-                f"{response.status_code}"
+                f"{symbol} HTTP {response.status_code}"
             )
-
             return []
 
         data = response.json()
 
-        chart = data.get(
-            "chart",
-            {}
-        )
-
-        result = chart.get(
-            "result"
+        result = (
+            data.get("chart", {})
+            .get("result")
         )
 
         if not result:
@@ -109,14 +85,9 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
             []
         )
 
-        indicators = result.get(
-            "indicators",
-            {}
-        )
-
-        quote_list = indicators.get(
-            "quote",
-            []
+        quote_list = (
+            result.get("indicators", {})
+            .get("quote", [])
         )
 
         if not quote_list:
@@ -124,31 +95,14 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
 
         quote = quote_list[0]
 
-        opens = quote.get(
-            "open",
-            []
-        )
-
-        highs = quote.get(
-            "high",
-            []
-        )
-
-        lows = quote.get(
-            "low",
-            []
-        )
-
-        closes = quote.get(
-            "close",
-            []
-        )
+        opens = quote.get("open", [])
+        highs = quote.get("high", [])
+        lows = quote.get("low", [])
+        closes = quote.get("close", [])
 
         candles = []
 
-        for i in range(
-            len(timestamps)
-        ):
+        for i in range(len(timestamps)):
 
             try:
 
@@ -166,20 +120,11 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
                     continue
 
                 candles.append({
-                    "time":
-                        timestamps[i],
-
-                    "open":
-                        float(o),
-
-                    "high":
-                        float(h),
-
-                    "low":
-                        float(l),
-
-                    "close":
-                        float(c),
+                    "time": timestamps[i],
+                    "open": float(o),
+                    "high": float(h),
+                    "low": float(l),
+                    "close": float(c),
                 })
 
             except (
@@ -187,7 +132,6 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
                 TypeError,
                 ValueError
             ):
-
                 continue
 
         return candles
@@ -195,15 +139,14 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
     except Exception as e:
 
         logger.error(
-            f"Yahoo error "
-            f"{symbol}: {e}"
+            f"Yahoo error {symbol}: {e}"
         )
 
         return []
 
 
 # ============================================================
-# GET CANDLES WITH FALLBACK
+# GET CANDLES
 # ============================================================
 
 def get_candles(
@@ -212,12 +155,7 @@ def get_candles(
     range_value
 ):
 
-    symbols = SYMBOLS.get(
-        asset,
-        []
-    )
-
-    for symbol in symbols:
+    for symbol in SYMBOLS.get(asset, []):
 
         candles = yahoo_candles(
             symbol,
@@ -228,16 +166,12 @@ def get_candles(
         if candles:
 
             logger.info(
-                f"{asset} "
-                f"{interval}: "
+                f"{asset} {interval}: "
                 f"{len(candles)} candles "
                 f"from {symbol}"
             )
 
-            return (
-                candles,
-                symbol
-            )
+            return candles, symbol
 
     return [], None
 
@@ -275,9 +209,7 @@ def get_live_price(asset):
 
                 data = response.json()
 
-                price = data.get(
-                    "price"
-                )
+                price = data.get("price")
 
                 if price is not None:
 
@@ -299,33 +231,25 @@ def get_live_price(asset):
 # EMA
 # ============================================================
 
-def ema(
-    values,
-    period
-):
+def ema(values, period):
 
     if len(values) < period:
-
         return None
 
-    multiplier = (
-        2 / (period + 1)
-    )
+    multiplier = 2 / (period + 1)
 
     value = (
-        sum(
-            values[:period]
-        ) / period
+        sum(values[:period])
+        / period
     )
 
     for price in values[period:]:
 
         value = (
-            (
-                price - value
-            )
+            (price - value)
             * multiplier
-        ) + value
+            + value
+        )
 
     return value
 
@@ -334,22 +258,15 @@ def ema(
 # RSI
 # ============================================================
 
-def rsi(
-    values,
-    period=14
-):
+def rsi(values, period=14):
 
     if len(values) < period + 1:
-
         return None
 
     gains = []
     losses = []
 
-    for i in range(
-        1,
-        len(values)
-    ):
+    for i in range(1, len(values)):
 
         change = (
             values[i]
@@ -396,13 +313,9 @@ def rsi(
         ) / period
 
     if avg_loss == 0:
-
         return 100
 
-    rs = (
-        avg_gain
-        / avg_loss
-    )
+    rs = avg_gain / avg_loss
 
     return 100 - (
         100 / (1 + rs)
@@ -413,21 +326,14 @@ def rsi(
 # ATR
 # ============================================================
 
-def atr(
-    candles,
-    period=14
-):
+def atr(candles, period=14):
 
     if len(candles) < period + 1:
-
         return None
 
     trs = []
 
-    for i in range(
-        1,
-        len(candles)
-    ):
+    for i in range(1, len(candles)):
 
         current = candles[i]
         previous = candles[i - 1]
@@ -450,7 +356,6 @@ def atr(
         trs.append(tr)
 
     if len(trs) < period:
-
         return None
 
     value = (
@@ -462,8 +367,7 @@ def atr(
 
         value = (
             (
-                value
-                * (period - 1)
+                value * (period - 1)
             )
             + tr
         ) / period
@@ -475,25 +379,18 @@ def atr(
 # ADX
 # ============================================================
 
-def adx(
-    candles,
-    period=14
-):
+def adx(candles, period=14):
 
     if len(candles) < (
         period * 2 + 1
     ):
-
         return None
 
     trs = []
     plus_dm = []
     minus_dm = []
 
-    for i in range(
-        1,
-        len(candles)
-    ):
+    for i in range(1, len(candles)):
 
         current = candles[i]
         previous = candles[i - 1]
@@ -525,31 +422,23 @@ def adx(
 
         trs.append(tr)
 
-        if (
-            high_diff > low_diff
-            and high_diff > 0
-        ):
-
-            plus_dm.append(
-                high_diff
+        plus_dm.append(
+            high_diff
+            if (
+                high_diff > low_diff
+                and high_diff > 0
             )
+            else 0
+        )
 
-        else:
-
-            plus_dm.append(0)
-
-        if (
-            low_diff > high_diff
-            and low_diff > 0
-        ):
-
-            minus_dm.append(
-                low_diff
+        minus_dm.append(
+            low_diff
+            if (
+                low_diff > high_diff
+                and low_diff > 0
             )
-
-        else:
-
-            minus_dm.append(0)
+            else 0
+        )
 
     tr_avg = (
         sum(trs[:period])
@@ -598,7 +487,6 @@ def adx(
         ) / period
 
         if tr_avg == 0:
-
             continue
 
         plus_di = (
@@ -619,7 +507,6 @@ def adx(
         )
 
         if total == 0:
-
             continue
 
         dx = (
@@ -634,13 +521,10 @@ def adx(
         dx_values.append(dx)
 
     if len(dx_values) < period:
-
         return None
 
     return (
-        sum(
-            dx_values[-period:]
-        )
+        sum(dx_values[-period:])
         / period
     )
 
@@ -649,12 +533,9 @@ def adx(
 # MARKET STRUCTURE
 # ============================================================
 
-def market_structure(
-    candles
-):
+def market_structure(candles):
 
     if len(candles) < 20:
-
         return "NEUTRAL"
 
     recent = candles[-20:]
@@ -663,37 +544,31 @@ def market_structure(
     second = recent[10:]
 
     first_high = max(
-        c["high"]
-        for c in first
+        c["high"] for c in first
     )
 
     second_high = max(
-        c["high"]
-        for c in second
+        c["high"] for c in second
     )
 
     first_low = min(
-        c["low"]
-        for c in first
+        c["low"] for c in first
     )
 
     second_low = min(
-        c["low"]
-        for c in second
+        c["low"] for c in second
     )
 
     if (
         second_high > first_high
         and second_low > first_low
     ):
-
         return "BULLISH"
 
     if (
         second_high < first_high
         and second_low < first_low
     ):
-
         return "BEARISH"
 
     return "NEUTRAL"
@@ -703,92 +578,63 @@ def market_structure(
 # SWING LEVELS
 # ============================================================
 
-def swing_levels(
-    candles,
-    lookback=40
-):
+def get_swing_levels(candles):
 
-    if len(candles) < lookback:
-
-        recent = candles
-
-    else:
-
-        recent = candles[
-            -lookback:
-        ]
-
-    if not recent:
+    if len(candles) < 20:
 
         return None, None
 
+    lookback = candles[-20:-1]
+
     swing_high = max(
         c["high"]
-        for c in recent
+        for c in lookback
     )
 
     swing_low = min(
         c["low"]
-        for c in recent
+        for c in lookback
     )
 
-    return (
-        swing_low,
-        swing_high
-    )
+    return swing_low, swing_high
 
 
 # ============================================================
 # LIQUIDITY SWEEP
 # ============================================================
 
-def liquidity_sweep(
-    candles
+def detect_liquidity_sweep(
+    candles,
+    swing_low,
+    swing_high
 ):
 
-    if len(candles) < 10:
-
+    if len(candles) < 3:
         return "NONE"
 
     previous = candles[-2]
     current = candles[-1]
 
-    recent = candles[-10:-2]
-
-    if not recent:
-
-        return "NONE"
-
-    previous_low = min(
-        c["low"]
-        for c in recent
-    )
-
-    previous_high = max(
-        c["high"]
-        for c in recent
-    )
-
-    # Bullish liquidity sweep
-    # Harga cucuk low kemudian
-    # candle tutup semula di atas low
+    # --------------------------------------------------------
+    # BULLISH LIQUIDITY SWEEP
+    # Price mengambil low kemudian close kembali atas level
+    # --------------------------------------------------------
 
     if (
-        current["low"]
-        < previous_low
-        and current["close"]
-        > previous_low
+        previous["low"] < swing_low
+        and current["close"] > swing_low
     ):
 
         return "BULLISH SWEEP"
 
-    # Bearish liquidity sweep
+    # --------------------------------------------------------
+    # BEARISH LIQUIDITY SWEEP
+    # Price mengambil high kemudian close kembali bawah level
+    # --------------------------------------------------------
 
     if (
-        current["high"]
-        > previous_high
-        and current["close"]
-        < previous_high
+        previous["high"] > swing_high
+        and current["close"] < swing_high
     ):
 
         return "BEARISH SWEEP"
@@ -800,134 +646,254 @@ def liquidity_sweep(
 # CANDLE CONFIRMATION
 # ============================================================
 
-def candle_confirmation(
+def detect_candle_confirmation(
     candles
 ):
 
     if len(candles) < 3:
-
         return "NONE"
 
-    current = candles[-1]
     previous = candles[-2]
+    current = candles[-1]
 
-    current_open = current["open"]
-    current_close = current["close"]
+    # ========================================================
+    # BULLISH ENGULFING
+    # ========================================================
 
-    previous_open = previous["open"]
-    previous_close = previous["close"]
-
-    # Bullish engulfing
-
-    bullish_engulfing = (
-        current_close > current_open
-        and previous_close < previous_open
-        and current_close
-        > previous_open
-        and current_open
-        < previous_close
+    previous_bearish = (
+        previous["close"]
+        < previous["open"]
     )
 
-    # Bearish engulfing
+    current_bullish = (
+        current["close"]
+        > current["open"]
+    )
 
-    bearish_engulfing = (
-        current_close < current_open
-        and previous_close > previous_open
-        and current_close
-        < previous_open
-        and current_open
-        > previous_close
+    bullish_engulfing = (
+        previous_bearish
+        and current_bullish
+        and current["open"]
+        <= previous["close"]
+        and current["close"]
+        >= previous["open"]
     )
 
     if bullish_engulfing:
 
         return "BULLISH ENGULFING"
 
+    # ========================================================
+    # BEARISH ENGULFING
+    # ========================================================
+
+    previous_bullish = (
+        previous["close"]
+        > previous["open"]
+    )
+
+    current_bearish = (
+        current["close"]
+        < current["open"]
+    )
+
+    bearish_engulfing = (
+        previous_bullish
+        and current_bearish
+        and current["open"]
+        >= previous["close"]
+        and current["close"]
+        <= previous["open"]
+    )
+
     if bearish_engulfing:
 
         return "BEARISH ENGULFING"
 
-    # Normal bullish candle
+    # ========================================================
+    # BULLISH PIN BAR
+    # ========================================================
 
-    if (
-        current_close > current_open
-    ):
+    body = abs(
+        current["close"]
+        - current["open"]
+    )
 
-        body = abs(
-            current_close
-            - current_open
+    lower_wick = (
+        min(
+            current["open"],
+            current["close"]
         )
+        - current["low"]
+    )
 
-        candle_range = (
-            current["high"]
-            - current["low"]
+    upper_wick = (
+        current["high"]
+        - max(
+            current["open"],
+            current["close"]
         )
+    )
+
+    if body > 0:
 
         if (
-            candle_range > 0
-            and body
-            / candle_range >= 0.60
+            lower_wick >= body * 2
+            and lower_wick > upper_wick
+            and current["close"]
+            > current["open"]
         ):
 
-            return "BULLISH CANDLE"
-
-    # Normal bearish candle
-
-    if (
-        current_close < current_open
-    ):
-
-        body = abs(
-            current_close
-            - current_open
-        )
-
-        candle_range = (
-            current["high"]
-            - current["low"]
-        )
+            return "BULLISH PIN BAR"
 
         if (
-            candle_range > 0
-            and body
-            / candle_range >= 0.60
+            upper_wick >= body * 2
+            and upper_wick > lower_wick
+            and current["close"]
+            < current["open"]
         ):
 
-            return "BEARISH CANDLE"
+            return "BEARISH PIN BAR"
 
     return "NONE"
 
 
 # ============================================================
-# ANALYZE
+# BREAK OF STRUCTURE
 # ============================================================
 
-def analyze_asset(
-    asset
+def detect_bos(
+    candles,
+    swing_low,
+    swing_high
 ):
 
-    candles_15m, source_15m = (
-        get_candles(
-            asset,
-            "15m",
-            "5d"
+    if len(candles) < 3:
+        return "NONE"
+
+    current = candles[-1]
+
+    previous_candles = candles[-11:-1]
+
+    previous_high = max(
+        c["high"]
+        for c in previous_candles
+    )
+
+    previous_low = min(
+        c["low"]
+        for c in previous_candles
+    )
+
+    if current["close"] > previous_high:
+
+        return "BULLISH BOS"
+
+    if current["close"] < previous_low:
+
+        return "BEARISH BOS"
+
+    return "NONE"
+
+
+# ============================================================
+# ENTRY TRIGGER
+# ============================================================
+
+def entry_trigger(
+    direction_bias,
+    liquidity,
+    candle_confirmation,
+    bos
+):
+
+    bullish_points = 0
+    bearish_points = 0
+
+    # Liquidity
+    if liquidity == "BULLISH SWEEP":
+        bullish_points += 1
+
+    if liquidity == "BEARISH SWEEP":
+        bearish_points += 1
+
+    # Candle
+    if candle_confirmation in (
+        "BULLISH ENGULFING",
+        "BULLISH PIN BAR"
+    ):
+        bullish_points += 1
+
+    if candle_confirmation in (
+        "BEARISH ENGULFING",
+        "BEARISH PIN BAR"
+    ):
+        bearish_points += 1
+
+    # BOS
+    if bos == "BULLISH BOS":
+        bullish_points += 1
+
+    if bos == "BEARISH BOS":
+        bearish_points += 1
+
+    # --------------------------------------------------------
+    # CONFIRMED ONLY WHEN 2 OR MORE TRIGGERS ALIGN
+    # AND THEY AGREE WITH THE BIAS
+    # --------------------------------------------------------
+
+    if (
+        direction_bias == "BUY"
+        and bullish_points >= 2
+    ):
+
+        return (
+            "BUY",
+            bullish_points
+        )
+
+    if (
+        direction_bias == "SELL"
+        and bearish_points >= 2
+    ):
+
+        return (
+            "SELL",
+            bearish_points
+        )
+
+    return (
+        "WAIT",
+        max(
+            bullish_points,
+            bearish_points
         )
     )
 
-    candles_1h, source_1h = (
-        get_candles(
-            asset,
-            "1h",
-            "1mo"
-        )
+
+# ============================================================
+# ANALYZE ASSET
+# ============================================================
+
+def analyze_asset(asset):
+
+    candles_15m, source_15m = get_candles(
+        asset,
+        "15m",
+        "5d"
+    )
+
+    candles_1h, source_1h = get_candles(
+        asset,
+        "1h",
+        "1mo"
     )
 
     if len(candles_15m) < 60:
 
         logger.warning(
             f"{asset}: only "
-            f"{len(candles_15m)} "
-            f"15M candles"
+            f"{len(candles_15m)} candles"
         )
 
         return None
@@ -938,6 +904,10 @@ def analyze_asset(
     ]
 
     price = closes[-1]
+
+    # ========================================================
+    # INDICATORS
+    # ========================================================
 
     ema20 = ema(
         closes,
@@ -964,29 +934,8 @@ def analyze_asset(
         14
     )
 
-    structure = (
-        market_structure(
-            candles_15m
-        )
-    )
-
-    swing_low, swing_high = (
-        swing_levels(
-            candles_15m,
-            40
-        )
-    )
-
-    sweep = (
-        liquidity_sweep(
-            candles_15m
-        )
-    )
-
-    candle = (
-        candle_confirmation(
-            candles_15m
-        )
+    structure = market_structure(
+        candles_15m
     )
 
     # ========================================================
@@ -1017,22 +966,16 @@ def analyze_asset(
             and h1_ema50 is not None
         ):
 
-            if (
-                h1_ema20
-                > h1_ema50
-            ):
+            if h1_ema20 > h1_ema50:
 
                 h1_trend = "BULLISH"
 
-            elif (
-                h1_ema20
-                < h1_ema50
-            ):
+            elif h1_ema20 < h1_ema50:
 
                 h1_trend = "BEARISH"
 
     # ========================================================
-    # SCORE
+    # BIAS SCORE
     # ========================================================
 
     buy_score = 0
@@ -1042,7 +985,6 @@ def analyze_asset(
     sell_reasons = []
 
     # EMA
-
     if (
         ema20 is not None
         and ema50 is not None
@@ -1065,33 +1007,25 @@ def analyze_asset(
             )
 
     # RSI
-
     if rsi_value is not None:
 
-        if (
-            50 <= rsi_value <= 70
-        ):
+        if 50 <= rsi_value <= 70:
 
             buy_score += 15
 
             buy_reasons.append(
-                "RSI menyokong "
-                "momentum bullish"
+                "RSI menyokong momentum bullish"
             )
 
-        elif (
-            30 <= rsi_value < 50
-        ):
+        elif 30 <= rsi_value < 50:
 
             sell_score += 15
 
             sell_reasons.append(
-                "RSI menyokong "
-                "momentum bearish"
+                "RSI menyokong momentum bearish"
             )
 
     # Structure
-
     if structure == "BULLISH":
 
         buy_score += 20
@@ -1109,7 +1043,6 @@ def analyze_asset(
         )
 
     # H1
-
     if h1_trend == "BULLISH":
 
         buy_score += 20
@@ -1127,7 +1060,6 @@ def analyze_asset(
         )
 
     # ADX
-
     if (
         adx_value is not None
         and adx_value >= 25
@@ -1138,8 +1070,7 @@ def analyze_asset(
             buy_score += 15
 
             buy_reasons.append(
-                "ADX menunjukkan "
-                "trend kuat"
+                "ADX menunjukkan trend kuat"
             )
 
         elif sell_score > buy_score:
@@ -1147,12 +1078,11 @@ def analyze_asset(
             sell_score += 15
 
             sell_reasons.append(
-                "ADX menunjukkan "
-                "trend kuat"
+                "ADX menunjukkan trend kuat"
             )
 
     # ========================================================
-    # BASE DIRECTION
+    # BIAS
     # ========================================================
 
     if (
@@ -1160,142 +1090,88 @@ def analyze_asset(
         and buy_score > sell_score
     ):
 
-        base_direction = "BUY"
+        bias = "BUY"
+        confidence = buy_score
 
     elif (
         sell_score >= 55
         and sell_score > buy_score
     ):
 
-        base_direction = "SELL"
+        bias = "SELL"
+        confidence = sell_score
 
     else:
 
-        base_direction = "WAIT"
+        if buy_score > sell_score:
 
-    # ========================================================
-    # ENTRY TRIGGER
-    # ========================================================
-    #
-    # BUY trigger:
-    # 1. Base direction BUY
-    # 2. Bullish liquidity sweep
-    # 3. Bullish candle confirmation
-    #
-    # SELL trigger:
-    # 1. Base direction SELL
-    # 2. Bearish liquidity sweep
-    # 3. Bearish candle confirmation
-    #
-    # Jika belum lengkap = WAIT
-    # ========================================================
+            bias = "BUY"
 
-    buy_trigger = (
-        base_direction == "BUY"
-        and sweep == "BULLISH SWEEP"
-        and candle in (
-            "BULLISH ENGULFING",
-            "BULLISH CANDLE"
-        )
-    )
+        elif sell_score > buy_score:
 
-    sell_trigger = (
-        base_direction == "SELL"
-        and sweep == "BEARISH SWEEP"
-        and candle in (
-            "BEARISH ENGULFING",
-            "BEARISH CANDLE"
-        )
-    )
+            bias = "SELL"
 
-    if buy_trigger:
+        else:
 
-        direction = "BUY"
-
-        confidence = min(
-            buy_score + 15,
-            100
-        )
-
-        reasons = list(
-            buy_reasons
-        )
-
-        reasons.append(
-            "Bullish liquidity sweep"
-        )
-
-        reasons.append(
-            candle
-        )
-
-        trigger = (
-            "BUY TRIGGER CONFIRMED"
-        )
-
-    elif sell_trigger:
-
-        direction = "SELL"
-
-        confidence = min(
-            sell_score + 15,
-            100
-        )
-
-        reasons = list(
-            sell_reasons
-        )
-
-        reasons.append(
-            "Bearish liquidity sweep"
-        )
-
-        reasons.append(
-            candle
-        )
-
-        trigger = (
-            "SELL TRIGGER CONFIRMED"
-        )
-
-    else:
-
-        direction = "WAIT"
+            bias = "NEUTRAL"
 
         confidence = max(
             buy_score,
             sell_score
         )
 
-        reasons = [
-            "Entry trigger belum lengkap"
-        ]
+    # ========================================================
+    # SWINGS
+    # ========================================================
 
-        if base_direction == "BUY":
-
-            reasons.append(
-                "Bias BUY tetapi "
-                "tunggu bullish sweep + "
-                "candle confirmation"
-            )
-
-        elif base_direction == "SELL":
-
-            reasons.append(
-                "Bias SELL tetapi "
-                "tunggu bearish sweep + "
-                "candle confirmation"
-            )
-
-        else:
-
-            reasons.append(
-                "Trend belum cukup kuat"
-            )
-
-        trigger = (
-            "WAIT FOR ENTRY TRIGGER"
+    swing_low, swing_high = (
+        get_swing_levels(
+            candles_15m
         )
+    )
+
+    # ========================================================
+    # LIQUIDITY
+    # ========================================================
+
+    liquidity = detect_liquidity_sweep(
+        candles_15m,
+        swing_low,
+        swing_high
+    )
+
+    # ========================================================
+    # CANDLE
+    # ========================================================
+
+    candle_confirmation = (
+        detect_candle_confirmation(
+            candles_15m
+        )
+    )
+
+    # ========================================================
+    # BOS
+    # ========================================================
+
+    bos = detect_bos(
+        candles_15m,
+        swing_low,
+        swing_high
+    )
+
+    # ========================================================
+    # ENTRY TRIGGER
+    # ========================================================
+
+    direction, trigger_score = (
+        entry_trigger(
+            bias,
+            liquidity,
+            candle_confirmation,
+            bos
+        )
+    )
 
     # ========================================================
     # ATR
@@ -1306,152 +1182,133 @@ def analyze_asset(
         or atr_value <= 0
     ):
 
-        atr_value = (
-            price * 0.005
-        )
+        atr_value = price * 0.005
 
     # ========================================================
-    # WATCH ZONE
+    # WATCH / ENTRY ZONE
     # ========================================================
 
-    zone_size = (
-        atr_value * 0.25
-    )
+    zone_size = atr_value * 0.20
 
-    watch_low = (
+    entry_low = (
         price - zone_size
     )
 
-    watch_high = (
+    entry_high = (
         price + zone_size
     )
 
     # ========================================================
-    # ENTRY / SL / TP
+    # SL / TP
     # ========================================================
 
     if direction == "BUY":
 
-        entry_low = watch_low
-        entry_high = watch_high
-
-        sl = price - (
-            atr_value * 1.2
+        sl = (
+            price
+            - atr_value * 1.2
         )
 
-        tp1 = price + (
-            atr_value * 1.2
+        tp1 = (
+            price
+            + atr_value * 1.2
         )
 
-        tp2 = price + (
-            atr_value * 2.0
+        tp2 = (
+            price
+            + atr_value * 2.0
         )
 
     elif direction == "SELL":
 
-        entry_low = watch_low
-        entry_high = watch_high
-
-        sl = price + (
-            atr_value * 1.2
+        sl = (
+            price
+            + atr_value * 1.2
         )
 
-        tp1 = price - (
-            atr_value * 1.2
+        tp1 = (
+            price
+            - atr_value * 1.2
         )
 
-        tp2 = price - (
-            atr_value * 2.0
+        tp2 = (
+            price
+            - atr_value * 2.0
         )
 
     else:
-
-        entry_low = watch_low
-        entry_high = watch_high
 
         sl = None
         tp1 = None
         tp2 = None
 
+    # ========================================================
+    # ANALYSIS
+    # ========================================================
+
+    reasons = []
+
+    if direction == "BUY":
+
+        reasons.append(
+            "Bullish entry trigger confirmed"
+        )
+
+    elif direction == "SELL":
+
+        reasons.append(
+            "Bearish entry trigger confirmed"
+        )
+
+    else:
+
+        reasons.append(
+            "Entry trigger belum lengkap"
+        )
+
+    if liquidity != "NONE":
+
+        reasons.append(
+            liquidity
+        )
+
+    if candle_confirmation != "NONE":
+
+        reasons.append(
+            candle_confirmation
+        )
+
+    if bos != "NONE":
+
+        reasons.append(
+            bos
+        )
+
     return {
-
-        "price":
-            price,
-
-        "direction":
-            direction,
-
-        "base_direction":
-            base_direction,
-
-        "confidence":
-            confidence,
-
-        "buy_score":
-            buy_score,
-
-        "sell_score":
-            sell_score,
-
-        "structure":
-            structure,
-
-        "h1_trend":
-            h1_trend,
-
-        "rsi":
-            rsi_value,
-
-        "adx":
-            adx_value,
-
-        "atr":
-            atr_value,
-
-        "sweep":
-            sweep,
-
-        "candle":
-            candle,
-
-        "trigger":
-            trigger,
-
-        "swing_low":
-            swing_low,
-
-        "swing_high":
-            swing_high,
-
-        "watch_low":
-            watch_low,
-
-        "watch_high":
-            watch_high,
-
-        "entry_low":
-            entry_low,
-
-        "entry_high":
-            entry_high,
-
-        "sl":
-            sl,
-
-        "tp1":
-            tp1,
-
-        "tp2":
-            tp2,
-
-        "reasons":
-            reasons,
-
-        "source_15m":
-            source_15m,
-
-        "source_1h":
-            source_1h,
+        "price": price,
+        "bias": bias,
+        "direction": direction,
+        "confidence": confidence,
+        "trigger_score": trigger_score,
+        "structure": structure,
+        "h1_trend": h1_trend,
+        "rsi": rsi_value,
+        "adx": adx_value,
+        "atr": atr_value,
+        "liquidity": liquidity,
+        "candle_confirmation":
+            candle_confirmation,
+        "bos": bos,
+        "swing_low": swing_low,
+        "swing_high": swing_high,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "reasons": reasons,
+        "source_15m": source_15m,
+        "source_1h": source_1h,
     }
 
 
@@ -1468,10 +1325,8 @@ def format_signal(
 
         return (
             "❌ *DATA CANDLE GAGAL*\n\n"
-            "15M candle tidak mencukupi.\n"
-            "Sumber fallback akan dicuba "
-            "secara automatik.\n\n"
-            "🔄 Cuba semula."
+            "15M candle tidak mencukupi.\n\n"
+            "🔄 Cuba semula selepas beberapa saat."
         )
 
     if asset == "gold":
@@ -1485,13 +1340,23 @@ def format_signal(
         emoji = "₿"
 
     price = result["price"]
+
     direction = result["direction"]
 
-    confidence = result[
-        "confidence"
+    bias = result["bias"]
+
+    confidence = result["confidence"]
+
+    liquidity = result["liquidity"]
+
+    candle = result[
+        "candle_confirmation"
     ]
 
+    bos = result["bos"]
+
     rsi_value = result["rsi"]
+
     adx_value = result["adx"]
 
     # ========================================================
@@ -1499,31 +1364,29 @@ def format_signal(
     # ========================================================
 
     message = (
-        f"{emoji} *{name} SIGNAL V5.3*\n\n"
-
-        f"💰 Harga: "
-        f"`${price:,.2f}`\n\n"
+        f"{emoji} *{name} SIGNAL V5.4*\n\n"
+        f"💰 Harga: `${price:,.2f}`\n\n"
     )
 
     if direction == "BUY":
 
         message += (
-            "🟢 *SIGNAL: BUY*\n"
-            "📈 Bias bullish\n\n"
+            "🟢 *SIGNAL: BUY CONFIRMED*\n"
+            "📈 Entry trigger aktif\n\n"
         )
 
     elif direction == "SELL":
 
         message += (
-            "🔴 *SIGNAL: SELL*\n"
-            "📉 Bias bearish\n\n"
+            "🔴 *SIGNAL: SELL CONFIRMED*\n"
+            "📉 Entry trigger aktif\n\n"
         )
 
     else:
 
         message += (
             "🟡 *SIGNAL: WAIT*\n"
-            "⏳ Confirmation belum cukup\n\n"
+            "⏳ Tunggu entry trigger\n\n"
         )
 
     # ========================================================
@@ -1531,20 +1394,12 @@ def format_signal(
     # ========================================================
 
     message += (
-        f"💯 Confidence: "
-        f"`{confidence}%`\n"
-
-        f"📐 Structure: "
-        f"`{result['structure']}`\n"
-
-        f"🕐 1H Trend: "
-        f"`{result['h1_trend']}`\n"
-
-        f"📊 RSI: "
-        f"`{rsi_value:.1f}`\n"
-
-        f"📈 ADX: "
-        f"`{adx_value:.1f}`\n\n"
+        f"🧭 *Bias:* `{bias}`\n"
+        f"💯 *Confidence:* `{confidence}%`\n"
+        f"📐 *Structure:* `{result['structure']}`\n"
+        f"🕐 *1H Trend:* `{result['h1_trend']}`\n"
+        f"📊 *RSI:* `{rsi_value:.1f}`\n"
+        f"📈 *ADX:* `{adx_value:.1f}`\n\n"
     )
 
     # ========================================================
@@ -1553,7 +1408,7 @@ def format_signal(
 
     message += (
         "💧 *LIQUIDITY*\n"
-        f"`{result['sweep']}`\n\n"
+        f"`{liquidity}`\n\n"
     )
 
     # ========================================================
@@ -1562,44 +1417,66 @@ def format_signal(
 
     message += (
         "🕯 *CANDLE CONFIRMATION*\n"
-        f"`{result['candle']}`\n\n"
+        f"`{candle}`\n\n"
     )
 
     # ========================================================
-    # ENTRY TRIGGER
+    # BOS
+    # ========================================================
+
+    message += (
+        "📐 *BREAK OF STRUCTURE*\n"
+        f"`{bos}`\n\n"
+    )
+
+    # ========================================================
+    # TRIGGER
     # ========================================================
 
     if direction == "BUY":
 
-        message += (
-            "🚀 *ENTRY TRIGGER*\n"
-            "🟢 BUY TRIGGER CONFIRMED\n\n"
+        trigger_text = (
+            "🟢 BUY ENTRY TRIGGER CONFIRMED"
         )
 
     elif direction == "SELL":
 
+        trigger_text = (
+            "🔴 SELL ENTRY TRIGGER CONFIRMED"
+        )
+
+    else:
+
+        trigger_text = (
+            "🟡 WAIT FOR ENTRY TRIGGER"
+        )
+
+    message += (
+        "⏳ *ENTRY TRIGGER*\n"
+        f"{trigger_text}\n\n"
+    )
+
+    # ========================================================
+    # ZONE
+    # ========================================================
+
+    if direction == "WAIT":
+
         message += (
-            "🚀 *ENTRY TRIGGER*\n"
-            "🔴 SELL TRIGGER CONFIRMED\n\n"
+            "🟡 *WATCH ZONE*\n"
+            f"`{result['entry_low']:,.2f}"
+            f" – "
+            f"{result['entry_high']:,.2f}`\n\n"
         )
 
     else:
 
         message += (
-            "⏳ *ENTRY TRIGGER*\n"
-            "🟡 WAIT FOR ENTRY TRIGGER\n\n"
+            "🟢 *ENTRY ZONE*\n"
+            f"`{result['entry_low']:,.2f}"
+            f" – "
+            f"{result['entry_high']:,.2f}`\n\n"
         )
-
-    # ========================================================
-    # WATCH ZONE
-    # ========================================================
-
-    message += (
-        "🟡 *WATCH ZONE*\n"
-        f"`{result['watch_low']:,.2f}"
-        f" – "
-        f"{result['watch_high']:,.2f}`\n\n"
-    )
 
     # ========================================================
     # SWINGS
@@ -1614,30 +1491,12 @@ def format_signal(
     )
 
     # ========================================================
-    # SUPPORT / RESISTANCE
-    # ========================================================
-
-    message += (
-        "🧱 *SUPPORT / RESISTANCE*\n"
-        f"Support: "
-        f"`{result['swing_low']:,.2f}`\n"
-
-        f"Resistance: "
-        f"`{result['swing_high']:,.2f}`\n\n"
-    )
-
-    # ========================================================
-    # ENTRY / SL / TP
+    # SL / TP
     # ========================================================
 
     if direction != "WAIT":
 
         message += (
-            "🎯 *ENTRY ZONE*\n"
-            f"`{result['entry_low']:,.2f}"
-            f" – "
-            f"{result['entry_high']:,.2f}`\n\n"
-
             "🛑 *STOP LOSS*\n"
             f"`{result['sl']:,.2f}`\n\n"
 
@@ -1652,13 +1511,9 @@ def format_signal(
     # ANALYSIS
     # ========================================================
 
-    message += (
-        "🧠 *ANALYSIS*\n"
-    )
+    message += "🧠 *ANALYSIS*\n"
 
-    for reason in result[
-        "reasons"
-    ]:
+    for reason in result["reasons"]:
 
         message += (
             f"• {reason}\n"
@@ -1670,12 +1525,8 @@ def format_signal(
 
     message += (
         "\n📡 *DATA SOURCE*\n"
-
-        f"15M: "
-        f"`{result['source_15m']}`\n"
-
-        f"1H: "
-        f"`{result['source_1h']}`\n\n"
+        f"15M: `{result['source_15m']}`\n"
+        f"1H: `{result['source_1h']}`\n\n"
 
         "⚠️ Technical signal sahaja. "
         "Bukan jaminan profit."
@@ -1694,30 +1545,28 @@ async def start(
 ):
 
     text = (
-        "🤖 *GOLD & BTC SIGNAL BOT V5.3*\n\n"
+        "🤖 *GOLD & BTC SIGNAL BOT V5.4*\n\n"
 
         "📌 *COMMANDS*\n\n"
 
         "/price\n"
-        "➡️ Harga Gold & BTC\n\n"
+        "➡️ Harga semasa\n\n"
 
         "/signal gold\n"
-        "➡️ Signal Gold\n\n"
+        "➡️ Gold Entry Trigger\n\n"
 
         "/signal btc\n"
-        "➡️ Signal BTC\n\n"
+        "➡️ BTC Entry Trigger\n\n"
 
         "/news\n"
         "➡️ News monitor\n\n"
 
-        "🧠 Technical Engine V5.3\n"
+        "🧠 Technical Engine V5.4\n"
         "📊 15M + 1H\n"
-        "📐 Market Structure\n"
-        "📈 EMA / RSI / ADX / ATR\n"
         "💧 Liquidity Sweep\n"
-        "🕯️ Candle Confirmation\n"
-        "🎯 Entry Trigger\n"
-        "📍 Watch / Entry Zone\n"
+        "🕯 Candle Confirmation\n"
+        "📐 Break of Structure\n"
+        "🎯 Entry Zone / SL / TP\n"
         "🚫 Tiada auto-trading"
     )
 
@@ -1745,7 +1594,7 @@ async def price(
     )
 
     text = (
-        "📈 *HARGA SEMASA V5.3*\n\n"
+        "📈 *HARGA SEMASA V5.4*\n\n"
     )
 
     if gold is not None:
@@ -1801,10 +1650,7 @@ async def signal(
 
         return
 
-    asset = (
-        context.args[0]
-        .lower()
-    )
+    asset = context.args[0].lower()
 
     if asset not in (
         "gold",
@@ -1819,16 +1665,14 @@ async def signal(
 
         return
 
-    status = (
-        await update.message.reply_text(
-            "🧠 *SIGNAL V5.3*\n\n"
-            "📡 Mengambil candle...\n"
-            "📊 15M + 1H\n"
-            "💧 Checking liquidity...\n"
-            "🕯️ Checking candle...\n"
-            "🎯 Checking entry trigger...\n"
-            "⏳ Sila tunggu..."
-        )
+    status = await update.message.reply_text(
+        "🧠 *SIGNAL V5.4*\n\n"
+        "📡 Mengambil candle...\n"
+        "📊 15M + 1H\n"
+        "💧 Checking liquidity...\n"
+        "🕯 Checking candle...\n"
+        "📐 Checking BOS...\n"
+        "⏳ Sila tunggu..."
     )
 
     try:
@@ -1870,7 +1714,7 @@ async def news(
 ):
 
     text = (
-        "📰 *NEWS MONITOR V5.3*\n\n"
+        "📰 *NEWS MONITOR V5.4*\n\n"
 
         "🥇 *GOLD*\n"
         "• USD Index\n"
@@ -1885,8 +1729,7 @@ async def news(
         "• BTC Dominance\n"
         "• US Macro Data\n\n"
 
-        "⚠️ News engine belum "
-        "mengambil berita live."
+        "⚠️ News live belum diaktifkan."
     )
 
     await update.message.reply_text(
@@ -1917,45 +1760,19 @@ async def error_handler(
 def main():
 
     print("")
-    print(
-        "=========================================="
-    )
-
-    print(
-        "🤖 GOLD & BTC SIGNAL BOT V5.3"
-    )
-
-    print(
-        "=========================================="
-    )
+    print("==========================================")
+    print("🤖 GOLD & BTC SIGNAL BOT V5.4")
+    print("==========================================")
 
     if not TOKEN:
 
         print("")
-        print(
-            "❌ BOT_TOKEN TIDAK DIJUMPAI"
-        )
-
+        print("❌ BOT_TOKEN TIDAK DIJUMPAI")
         print("")
-
-        print(
-            "Pastikan Railway Variable:"
-        )
-
-        print(
-            "BOT_TOKEN = token BotFather"
-        )
-
-        print("")
-
         return
 
     print(
         "✅ BOT_TOKEN berjaya dibaca!"
-    )
-
-    print(
-        "🤖 Starting V5.3..."
     )
 
     try:
@@ -2000,7 +1817,7 @@ def main():
         )
 
         print(
-            "🚀 V5.3 BOT AKTIF!"
+            "🚀 V5.4 BOT AKTIF!"
         )
 
         print(
@@ -2008,27 +1825,19 @@ def main():
         )
 
         print(
-            "🥇 Gold fallback: GC=F"
+            "💧 Liquidity engine aktif"
         )
 
         print(
-            "₿ BTC: BTC-USD"
+            "🕯 Candle confirmation aktif"
         )
 
         print(
-            "📊 Timeframe: 15M + 1H"
+            "📐 BOS engine aktif"
         )
 
         print(
-            "💧 Liquidity sweep: ON"
-        )
-
-        print(
-            "🕯️ Candle confirmation: ON"
-        )
-
-        print(
-            "🎯 Entry trigger: ON"
+            "🎯 Entry trigger aktif"
         )
 
         print(
@@ -2042,15 +1851,8 @@ def main():
     except Exception as e:
 
         print("")
-
-        print(
-            "❌ BOT ERROR"
-        )
-
-        print(
-            str(e)
-        )
-
+        print("❌ BOT ERROR")
+        print(str(e))
         print("")
 
         logger.exception(
@@ -2063,5 +1865,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
