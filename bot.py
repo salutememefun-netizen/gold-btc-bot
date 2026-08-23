@@ -1,6 +1,9 @@
 import os
 import logging
 import requests
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -9,8 +12,7 @@ from telegram.ext import (
 )
 
 # ============================================================
-# GOLD & BTC SIGNAL BOT V7
-# FULL VERSION - READY FOR RAILWAY
+# GOLD & BTC SIGNAL BOT V7.1
 # ============================================================
 
 logging.basicConfig(
@@ -22,21 +24,16 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+MY_TZ = ZoneInfo("Asia/Kuala_Lumpur")
 
 # ============================================================
 # SYMBOLS
 # ============================================================
 
 SYMBOLS = {
-    "gold": [
-        "GC=F",
-        "XAUUSD=X",
-    ],
-    "btc": [
-        "BTC-USD",
-    ],
+    "gold": ["GC=F", "XAUUSD=X"],
+    "btc": ["BTC-USD"],
 }
-
 
 # ============================================================
 # HTTP SESSION
@@ -47,83 +44,51 @@ SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
         "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
+        "(Linux; Android 13) "
         "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
         "Chrome/120 Safari/537.36"
-    ),
-    "Accept": "application/json,text/plain,*/*",
+    )
 })
 
 
 # ============================================================
-# YAHOO REQUEST
+# GOLD MARKET STATUS
+# CME GOLD:
+# Sunday-Friday
+# Approx Malaysia time:
+# Open: 06:00 MYT
+# Daily break: 05:00-06:00 MYT
+# Saturday: CLOSED
 # ============================================================
 
-def yahoo_request(
-    symbol,
-    interval="15m",
-    range_value="5d",
-):
-    """
-    Cuba beberapa Yahoo Finance endpoint.
-    """
+def gold_market_status():
 
-    endpoints = [
-        "https://query1.finance.yahoo.com",
-        "https://query2.finance.yahoo.com",
-    ]
+    now = datetime.now(MY_TZ)
 
-    params = {
-        "interval": interval,
-        "range": range_value,
-        "includePrePost": "true",
-        "events": "div,splits",
-    }
+    weekday = now.weekday()
+    current_time = now.hour * 60 + now.minute
 
-    for endpoint in endpoints:
+    # Saturday
+    if weekday == 5:
+        return False, "WEEKEND"
 
-        url = (
-            f"{endpoint}/v8/finance/chart/"
-            f"{symbol}"
-        )
+    # Sunday before 06:00
+    if weekday == 6 and current_time < 360:
+        return False, "WEEKEND"
 
-        try:
+    # Daily maintenance break 05:00-06:00
+    if current_time >= 300 and current_time < 360:
+        return False, "DAILY BREAK"
 
-            response = SESSION.get(
-                url,
-                params=params,
-                timeout=20,
-            )
+    return True, "OPEN"
 
-            if response.status_code != 200:
-                logger.warning(
-                    "%s returned HTTP %s",
-                    symbol,
-                    response.status_code,
-                )
-                continue
 
-            data = response.json()
+# ============================================================
+# BTC MARKET STATUS
+# ============================================================
 
-            result = (
-                data
-                .get("chart", {})
-                .get("result")
-            )
-
-            if result:
-                return result[0]
-
-        except Exception as e:
-
-            logger.warning(
-                "Yahoo request error %s: %s",
-                symbol,
-                e,
-            )
-
-    return None
+def btc_market_status():
+    return True, "OPEN 24/7"
 
 
 # ============================================================
@@ -136,184 +101,114 @@ def yahoo_candles(
     range_value="5d",
 ):
 
-    result = yahoo_request(
-        symbol,
-        interval,
-        range_value,
+    url = (
+        "https://query1.finance.yahoo.com/"
+        f"v8/finance/chart/{symbol}"
     )
 
-    if not result:
-        return []
+    params = {
+        "interval": interval,
+        "range": range_value,
+        "includePrePost": "true",
+        "events": "div,splits",
+    }
 
-    timestamps = result.get(
-        "timestamp",
-        [],
-    )
+    try:
 
-    quote_list = (
-        result
-        .get("indicators", {})
-        .get("quote", [])
-    )
+        response = SESSION.get(
+            url,
+            params=params,
+            timeout=20,
+        )
 
-    if not quote_list:
-        return []
+        if response.status_code != 200:
 
-    quote = quote_list[0]
+            logger.warning(
+                "%s HTTP %s",
+                symbol,
+                response.status_code,
+            )
 
-    opens = quote.get("open", [])
-    highs = quote.get("high", [])
-    lows = quote.get("low", [])
-    closes = quote.get("close", [])
+            return []
 
-    candles = []
+        data = response.json()
 
-    for i in range(len(timestamps)):
+        result = (
+            data
+            .get("chart", {})
+            .get("result")
+        )
 
-        try:
+        if not result:
+            return []
 
-            o = opens[i]
-            h = highs[i]
-            l = lows[i]
-            c = closes[i]
+        result = result[0]
 
-            if None in (
-                o,
-                h,
-                l,
-                c,
+        timestamps = result.get(
+            "timestamp",
+            []
+        )
+
+        quote_list = (
+            result
+            .get("indicators", {})
+            .get("quote", [])
+        )
+
+        if not quote_list:
+            return []
+
+        quote = quote_list[0]
+
+        opens = quote.get("open", [])
+        highs = quote.get("high", [])
+        lows = quote.get("low", [])
+        closes = quote.get("close", [])
+
+        candles = []
+
+        for i in range(len(timestamps)):
+
+            try:
+
+                o = opens[i]
+                h = highs[i]
+                l = lows[i]
+                c = closes[i]
+
+                if None in (o, h, l, c):
+                    continue
+
+                candles.append({
+                    "time": timestamps[i],
+                    "open": float(o),
+                    "high": float(h),
+                    "low": float(l),
+                    "close": float(c),
+                })
+
+            except (
+                IndexError,
+                TypeError,
+                ValueError,
             ):
                 continue
 
-            candles.append({
-                "time": timestamps[i],
-                "open": float(o),
-                "high": float(h),
-                "low": float(l),
-                "close": float(c),
-            })
+        return candles
 
-        except (
-            IndexError,
-            TypeError,
-            ValueError,
-        ):
-            continue
+    except Exception as e:
 
-    return candles
+        logger.error(
+            "Yahoo error %s: %s",
+            symbol,
+            e,
+        )
+
+        return []
 
 
 # ============================================================
-# LIVE PRICE
-# ============================================================
-
-def get_live_price(asset):
-
-    for symbol in SYMBOLS.get(
-        asset,
-        [],
-    ):
-
-        # ----------------------------------------------------
-        # METHOD 1
-        # Yahoo metadata
-        # ----------------------------------------------------
-
-        result = yahoo_request(
-            symbol,
-            "1m",
-            "1d",
-        )
-
-        if result:
-
-            meta = result.get(
-                "meta",
-                {},
-            )
-
-            possible_prices = [
-                meta.get(
-                    "regularMarketPrice"
-                ),
-                meta.get(
-                    "previousClose"
-                ),
-            ]
-
-            for price in possible_prices:
-
-                if price is not None:
-
-                    try:
-
-                        return (
-                            float(price),
-                            symbol,
-                            "Yahoo Market Price",
-                        )
-
-                    except (
-                        TypeError,
-                        ValueError,
-                    ):
-                        pass
-
-        # ----------------------------------------------------
-        # METHOD 2
-        # 1M candle
-        # ----------------------------------------------------
-
-        candles = yahoo_candles(
-            symbol,
-            "1m",
-            "1d",
-        )
-
-        if candles:
-
-            price = candles[-1].get(
-                "close"
-            )
-
-            if price is not None:
-
-                return (
-                    float(price),
-                    symbol,
-                    "Yahoo 1M Candle",
-                )
-
-        # ----------------------------------------------------
-        # METHOD 3
-        # 15M candle fallback
-        # ----------------------------------------------------
-
-        candles = yahoo_candles(
-            symbol,
-            "15m",
-            "5d",
-        )
-
-        if candles:
-
-            price = candles[-1].get(
-                "close"
-            )
-
-            if price is not None:
-
-                return (
-                    float(price),
-                    symbol,
-                    "Yahoo 15M Candle",
-                )
-
-    return None, None, None
-
-
-# ============================================================
-# GET CANDLES
+# CANDLE FALLBACK
 # ============================================================
 
 def get_candles(
@@ -322,10 +217,7 @@ def get_candles(
     range_value,
 ):
 
-    for symbol in SYMBOLS.get(
-        asset,
-        [],
-    ):
+    for symbol in SYMBOLS.get(asset, []):
 
         candles = yahoo_candles(
             symbol,
@@ -343,29 +235,113 @@ def get_candles(
                 symbol,
             )
 
-            return (
-                candles,
-                symbol,
-            )
+            return candles, symbol
 
     return [], None
+
+
+# ============================================================
+# LIVE PRICE
+# ============================================================
+
+def get_live_price(asset):
+
+    for symbol in SYMBOLS.get(asset, []):
+
+        url = (
+            "https://query1.finance.yahoo.com/"
+            f"v8/finance/chart/{symbol}"
+        )
+
+        params = {
+            "interval": "1m",
+            "range": "1d",
+            "includePrePost": "true",
+        }
+
+        try:
+
+            response = SESSION.get(
+                url,
+                params=params,
+                timeout=15,
+            )
+
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+
+            result = (
+                data
+                .get("chart", {})
+                .get("result")
+            )
+
+            if not result:
+                continue
+
+            meta = result[0].get(
+                "meta",
+                {},
+            )
+
+            price = meta.get(
+                "regularMarketPrice"
+            )
+
+            if price is None:
+
+                timestamps = result[0].get(
+                    "timestamp",
+                    [],
+                )
+
+                quote_list = (
+                    result[0]
+                    .get("indicators", {})
+                    .get("quote", [])
+                )
+
+                if timestamps and quote_list:
+
+                    closes = quote_list[0].get(
+                        "close",
+                        [],
+                    )
+
+                    for value in reversed(closes):
+
+                        if value is not None:
+
+                            price = float(value)
+                            break
+
+            if price is not None:
+
+                return float(price), symbol
+
+        except Exception as e:
+
+            logger.warning(
+                "Price error %s: %s",
+                symbol,
+                e,
+            )
+
+    return None, None
 
 
 # ============================================================
 # EMA
 # ============================================================
 
-def ema(
-    values,
-    period,
-):
+def ema(values, period):
 
     if len(values) < period:
         return None
 
-    multiplier = (
-        2 / (period + 1)
-    )
+    multiplier = 2 / (period + 1)
 
     value = (
         sum(values[:period])
@@ -375,9 +351,7 @@ def ema(
     for price in values[period:]:
 
         value = (
-            (
-                price - value
-            )
+            (price - value)
             * multiplier
         ) + value
 
@@ -388,10 +362,7 @@ def ema(
 # RSI
 # ============================================================
 
-def rsi(
-    values,
-    period=14,
-):
+def rsi(values, period=14):
 
     if len(values) < period + 1:
         return None
@@ -399,10 +370,7 @@ def rsi(
     gains = []
     losses = []
 
-    for i in range(
-        1,
-        len(values),
-    ):
+    for i in range(1, len(values)):
 
         change = (
             values[i]
@@ -427,10 +395,7 @@ def rsi(
         / period
     )
 
-    for i in range(
-        period,
-        len(gains),
-    ):
+    for i in range(period, len(gains)):
 
         avg_gain = (
             (
@@ -449,23 +414,12 @@ def rsi(
         ) / period
 
     if avg_loss == 0:
-
-        if avg_gain == 0:
-            return 50.0
-
         return 100.0
 
-    rs = (
-        avg_gain
-        / avg_loss
-    )
+    rs = avg_gain / avg_loss
 
-    return (
-        100
-        - (
-            100
-            / (1 + rs)
-        )
+    return 100 - (
+        100 / (1 + rs)
     )
 
 
@@ -473,20 +427,14 @@ def rsi(
 # ATR
 # ============================================================
 
-def atr(
-    candles,
-    period=14,
-):
+def atr(candles, period=14):
 
     if len(candles) < period + 1:
         return None
 
     trs = []
 
-    for i in range(
-        1,
-        len(candles),
-    ):
+    for i in range(1, len(candles)):
 
         current = candles[i]
         previous = candles[i - 1]
@@ -533,10 +481,7 @@ def atr(
 # ADX
 # ============================================================
 
-def adx(
-    candles,
-    period=14,
-):
+def adx(candles, period=14):
 
     if len(candles) < (
         period * 2 + 1
@@ -547,10 +492,7 @@ def adx(
     plus_dm = []
     minus_dm = []
 
-    for i in range(
-        1,
-        len(candles),
-    ):
+    for i in range(1, len(candles)):
 
         current = candles[i]
         previous = candles[i - 1]
@@ -586,26 +528,16 @@ def adx(
             high_diff > low_diff
             and high_diff > 0
         ):
-
-            plus_dm.append(
-                high_diff
-            )
-
+            plus_dm.append(high_diff)
         else:
-
             plus_dm.append(0)
 
         if (
             low_diff > high_diff
             and low_diff > 0
         ):
-
-            minus_dm.append(
-                low_diff
-            )
-
+            minus_dm.append(low_diff)
         else:
-
             minus_dm.append(0)
 
     tr_avg = (
@@ -625,10 +557,7 @@ def adx(
 
     dx_values = []
 
-    for i in range(
-        period,
-        len(trs),
-    ):
+    for i in range(period, len(trs)):
 
         tr_avg = (
             (
@@ -692,9 +621,7 @@ def adx(
         return None
 
     return (
-        sum(
-            dx_values[-period:]
-        )
+        sum(dx_values[-period:])
         / period
     )
 
@@ -703,10 +630,7 @@ def adx(
 # SWINGS
 # ============================================================
 
-def get_swings(
-    candles,
-    lookback=30,
-):
+def get_swings(candles, lookback=30):
 
     if not candles:
         return None, None
@@ -716,9 +640,7 @@ def get_swings(
         len(candles),
     )
 
-    recent = candles[
-        -lookback:
-    ]
+    recent = candles[-lookback:]
 
     swing_high = max(
         c["high"]
@@ -730,19 +652,14 @@ def get_swings(
         for c in recent
     )
 
-    return (
-        swing_low,
-        swing_high,
-    )
+    return swing_low, swing_high
 
 
 # ============================================================
 # MARKET STRUCTURE
 # ============================================================
 
-def market_structure(
-    candles,
-):
+def market_structure(candles):
 
     if len(candles) < 20:
         return "NEUTRAL"
@@ -776,14 +693,12 @@ def market_structure(
         second_high > first_high
         and second_low > first_low
     ):
-
         return "BULLISH"
 
     if (
         second_high < first_high
         and second_low < first_low
     ):
-
         return "BEARISH"
 
     return "NEUTRAL"
@@ -793,9 +708,7 @@ def market_structure(
 # CANDLE CONFIRMATION
 # ============================================================
 
-def candle_confirmation(
-    candles,
-):
+def candle_confirmation(candles):
 
     if len(candles) < 3:
         return "NONE"
@@ -823,30 +736,20 @@ def candle_confirmation(
         < cur["open"]
     )
 
-    # Bullish engulfing
-
     if (
         prev_bearish
         and cur_bullish
-        and cur["open"]
-        <= prev["close"]
-        and cur["close"]
-        >= prev["open"]
+        and cur["open"] <= prev["close"]
+        and cur["close"] >= prev["open"]
     ):
-
         return "BULLISH ENGULFING"
-
-    # Bearish engulfing
 
     if (
         prev_bullish
         and cur_bearish
-        and cur["open"]
-        >= prev["close"]
-        and cur["close"]
-        <= prev["open"]
+        and cur["open"] >= prev["close"]
+        and cur["close"] <= prev["open"]
     ):
-
         return "BEARISH ENGULFING"
 
     body = abs(
@@ -870,14 +773,12 @@ def candle_confirmation(
             cur_bullish
             and ratio >= 0.65
         ):
-
             return "BULLISH CANDLE"
 
         if (
             cur_bearish
             and ratio >= 0.65
         ):
-
             return "BEARISH CANDLE"
 
     return "NONE"
@@ -887,9 +788,7 @@ def candle_confirmation(
 # LIQUIDITY SWEEP
 # ============================================================
 
-def liquidity_sweep(
-    candles,
-):
+def liquidity_sweep(candles):
 
     if len(candles) < 12:
         return "NONE", None
@@ -908,8 +807,6 @@ def liquidity_sweep(
         for c in previous
     )
 
-    # Sell-side sweep
-
     if (
         current["low"]
         < liquidity_low
@@ -921,8 +818,6 @@ def liquidity_sweep(
             "BULLISH SWEEP",
             liquidity_low,
         )
-
-    # Buy-side sweep
 
     if (
         current["high"]
@@ -940,15 +835,13 @@ def liquidity_sweep(
 
 
 # ============================================================
-# BOS
+# BREAK OF STRUCTURE
 # ============================================================
 
-def detect_bos(
-    candles,
-):
+def detect_bos(candles):
 
     if len(candles) < 15:
-        return "NONE"
+        return "NONE", None
 
     current = candles[-1]
 
@@ -964,21 +857,19 @@ def detect_bos(
         for c in previous
     )
 
-    if (
-        current["close"]
-        > previous_high
-    ):
+    if current["close"] > previous_high:
+        return (
+            "BULLISH BOS",
+            previous_high,
+        )
 
-        return "BULLISH BOS"
+    if current["close"] < previous_low:
+        return (
+            "BEARISH BOS",
+            previous_low,
+        )
 
-    if (
-        current["close"]
-        < previous_low
-    ):
-
-        return "BEARISH BOS"
-
-    return "NONE"
+    return "NONE", None
 
 
 # ============================================================
@@ -988,14 +879,15 @@ def detect_bos(
 def detect_retest(
     candles,
     bos,
+    bos_price,
     atr_value,
 ):
 
     if (
         bos == "NONE"
+        or bos_price is None
         or atr_value is None
     ):
-
         return "NONE", None
 
     if len(candles) < 8:
@@ -1003,53 +895,32 @@ def detect_retest(
 
     current = candles[-1]
 
-    previous = candles[-7:-1]
-
-    previous_high = max(
-        c["high"]
-        for c in previous
-    )
-
-    previous_low = min(
-        c["low"]
-        for c in previous
-    )
-
-    tolerance = (
-        atr_value
-        * 0.20
-    )
+    tolerance = atr_value * 0.20
 
     if bos == "BULLISH BOS":
 
-        level = previous_high
-
         if (
             current["low"]
-            <= level + tolerance
+            <= bos_price + tolerance
             and current["close"]
-            > level
+            > bos_price
         ):
-
             return (
                 "BULLISH RETEST",
-                level,
+                bos_price,
             )
 
     if bos == "BEARISH BOS":
 
-        level = previous_low
-
         if (
             current["high"]
-            >= level - tolerance
+            >= bos_price - tolerance
             and current["close"]
-            < level
+            < bos_price
         ):
-
             return (
                 "BEARISH RETEST",
-                level,
+                bos_price,
             )
 
     return "NONE", None
@@ -1082,10 +953,10 @@ def calculate_bias(
             sell += 1
 
     if structure == "BULLISH":
-        buy += 1
+        buy += 2
 
     elif structure == "BEARISH":
-        sell += 1
+        sell += 2
 
     if h1_trend == "BULLISH":
         buy += 2
@@ -1095,26 +966,16 @@ def calculate_bias(
 
     if rsi_value is not None:
 
-        if (
-            50
-            <= rsi_value
-            < 70
-        ):
-
+        if 50 <= rsi_value < 70:
             buy += 1
 
-        elif (
-            30
-            < rsi_value
-            < 50
-        ):
-
+        elif 30 < rsi_value < 50:
             sell += 1
 
-    if buy > sell:
+    if buy >= sell + 2:
         return "BUY", buy, sell
 
-    if sell > buy:
+    if sell >= buy + 2:
         return "SELL", buy, sell
 
     return "NEUTRAL", buy, sell
@@ -1132,15 +993,8 @@ def build_entry_zone(
     bos_price=None,
 ):
 
-    if (
-        atr_value is None
-        or atr_value <= 0
-    ):
-
-        atr_value = (
-            price
-            * 0.005
-        )
+    if atr_value is None or atr_value <= 0:
+        atr_value = price * 0.005
 
     reference = (
         bos_price
@@ -1151,10 +1005,7 @@ def build_entry_zone(
     if reference is None:
         reference = price
 
-    zone = (
-        atr_value
-        * 0.20
-    )
+    zone = atr_value * 0.20
 
     return (
         reference - zone,
@@ -1166,9 +1017,35 @@ def build_entry_zone(
 # ANALYZE ASSET
 # ============================================================
 
-def analyze_asset(
-    asset,
-):
+def analyze_asset(asset):
+
+    # ========================================================
+    # MARKET CHECK
+    # ========================================================
+
+    if asset == "gold":
+
+        market_open, market_reason = (
+            gold_market_status()
+        )
+
+    else:
+
+        market_open, market_reason = (
+            btc_market_status()
+        )
+
+    if not market_open:
+
+        return {
+            "market_open": False,
+            "market_reason": market_reason,
+            "asset": asset,
+        }
+
+    # ========================================================
+    # DATA
+    # ========================================================
 
     candles_15m, source_15m = get_candles(
         asset,
@@ -1184,12 +1061,6 @@ def analyze_asset(
 
     if len(candles_15m) < 60:
 
-        logger.warning(
-            "%s only %s candles",
-            asset,
-            len(candles_15m),
-        )
-
         return None
 
     closes = [
@@ -1198,6 +1069,10 @@ def analyze_asset(
     ]
 
     price = closes[-1]
+
+    # ========================================================
+    # INDICATORS
+    # ========================================================
 
     ema20 = ema(
         closes,
@@ -1262,38 +1137,33 @@ def analyze_asset(
         ):
 
             if h1_ema20 > h1_ema50:
-
                 h1_trend = "BULLISH"
 
             elif h1_ema20 < h1_ema50:
-
                 h1_trend = "BEARISH"
 
     # ========================================================
     # BIAS
     # ========================================================
 
-    (
-        bias,
-        buy_points,
-        sell_points,
-    ) = calculate_bias(
-        ema20,
-        ema50,
-        structure,
-        h1_trend,
-        rsi_value,
+    bias, buy_points, sell_points = (
+        calculate_bias(
+            ema20,
+            ema50,
+            structure,
+            h1_trend,
+            rsi_value,
+        )
     )
 
     # ========================================================
     # LIQUIDITY
     # ========================================================
 
-    (
-        liquidity,
-        liquidity_price,
-    ) = liquidity_sweep(
-        candles_15m
+    liquidity, liquidity_price = (
+        liquidity_sweep(
+            candles_15m
+        )
     )
 
     # ========================================================
@@ -1308,40 +1178,18 @@ def analyze_asset(
     # BOS
     # ========================================================
 
-    bos = detect_bos(
+    bos, bos_price = detect_bos(
         candles_15m
     )
-
-    bos_price = None
-
-    if bos == "BULLISH BOS":
-
-        previous = candles_15m[-11:-1]
-
-        bos_price = max(
-            c["high"]
-            for c in previous
-        )
-
-    elif bos == "BEARISH BOS":
-
-        previous = candles_15m[-11:-1]
-
-        bos_price = min(
-            c["low"]
-            for c in previous
-        )
 
     # ========================================================
     # RETEST
     # ========================================================
 
-    (
-        retest,
-        retest_price,
-    ) = detect_retest(
+    retest, retest_price = detect_retest(
         candles_15m,
         bos,
+        bos_price,
         atr_value,
     )
 
@@ -1421,56 +1269,43 @@ def analyze_asset(
     # CONFIDENCE
     # ========================================================
 
-    base_confidence = max(
-        buy_points,
-        sell_points,
-    )
+    if direction == "BUY":
 
-    confidence = min(
-        95,
-        50
-        + (
-            base_confidence
-            * 7
-        )
-        + int(
-            trigger_score
-            * 0.25
-        ),
-    )
-
-    if direction == "WAIT":
         confidence = min(
-            confidence,
-            69,
+            95,
+            55 + trigger_score * 0.40
         )
 
-    # ========================================================
-    # SAFE ATR
-    # ========================================================
+    elif direction == "SELL":
 
-    safe_atr = atr_value
-
-    if (
-        safe_atr is None
-        or safe_atr <= 0
-    ):
-
-        safe_atr = (
-            price
-            * 0.005
+        confidence = min(
+            95,
+            55 + trigger_score * 0.40
         )
 
+    else:
+
+        # WAIT confidence is intentionally lower
+        directional_strength = abs(
+            buy_points - sell_points
+        )
+
+        confidence = min(
+            59,
+            40
+            + directional_strength * 4
+            + trigger_score * 0.10,
+        )
+
+    confidence = int(confidence)
+
     # ========================================================
-    # ENTRY
+    # ENTRY ZONE
     # ========================================================
 
-    (
-        entry_low,
-        entry_high,
-    ) = build_entry_zone(
+    entry_low, entry_high = build_entry_zone(
         price,
-        safe_atr,
+        atr_value,
         bias,
         liquidity_price,
         bos_price,
@@ -1492,49 +1327,21 @@ def analyze_asset(
             else swing_low
         )
 
-        if protective_level is None:
-
-            protective_level = (
-                price
-                - safe_atr
-            )
-
-        sl = (
-            protective_level
-            - (
-                safe_atr
-                * 0.30
-            )
+        sl = protective_level - (
+            atr_value * 0.30
         )
 
-        risk = (
-            price
-            - sl
-        )
+        risk = price - sl
 
         if risk <= 0:
+            risk = atr_value
 
-            risk = safe_atr
-
-            sl = (
-                price
-                - risk
-            )
-
-        tp1 = (
-            price
-            + (
-                risk
-                * 1.5
-            )
+        tp1 = price + (
+            risk * 1.5
         )
 
-        tp2 = (
-            price
-            + (
-                risk
-                * 2.5
-            )
+        tp2 = price + (
+            risk * 2.5
         )
 
     elif direction == "SELL":
@@ -1545,49 +1352,21 @@ def analyze_asset(
             else swing_high
         )
 
-        if protective_level is None:
-
-            protective_level = (
-                price
-                + safe_atr
-            )
-
-        sl = (
-            protective_level
-            + (
-                safe_atr
-                * 0.30
-            )
+        sl = protective_level + (
+            atr_value * 0.30
         )
 
-        risk = (
-            sl
-            - price
-        )
+        risk = sl - price
 
         if risk <= 0:
+            risk = atr_value
 
-            risk = safe_atr
-
-            sl = (
-                price
-                + risk
-            )
-
-        tp1 = (
-            price
-            - (
-                risk
-                * 1.5
-            )
+        tp1 = price - (
+            risk * 1.5
         )
 
-        tp2 = (
-            price
-            - (
-                risk
-                * 2.5
-            )
+        tp2 = price - (
+            risk * 2.5
         )
 
     # ========================================================
@@ -1596,25 +1375,50 @@ def analyze_asset(
 
     reasons = []
 
-    if bias == "BUY":
-        reasons.append("Bias BUY")
+    if bias != "NEUTRAL":
 
-    elif bias == "SELL":
-        reasons.append("Bias SELL")
+        reasons.append(
+            f"Bias {bias}"
+        )
+
+    if structure != "NEUTRAL":
+
+        reasons.append(
+            f"Structure {structure}"
+        )
+
+    if h1_trend != "NEUTRAL":
+
+        reasons.append(
+            f"1H {h1_trend}"
+        )
 
     if liquidity != "NONE":
-        reasons.append(liquidity)
+
+        reasons.append(
+            liquidity
+        )
 
     if candle_confirm != "NONE":
-        reasons.append(candle_confirm)
+
+        reasons.append(
+            candle_confirm
+        )
 
     if bos != "NONE":
-        reasons.append(bos)
+
+        reasons.append(
+            bos
+        )
 
     if retest != "NONE":
-        reasons.append(retest)
+
+        reasons.append(
+            retest
+        )
 
     if not reasons:
+
         reasons.append(
             "Belum ada confirmation"
         )
@@ -1628,7 +1432,6 @@ def analyze_asset(
     if bias == "BUY":
 
         if liquidity != "BULLISH SWEEP":
-
             missing.append(
                 "Bullish liquidity sweep"
             )
@@ -1637,19 +1440,16 @@ def analyze_asset(
             "BULLISH ENGULFING",
             "BULLISH CANDLE",
         ):
-
             missing.append(
                 "Bullish candle confirmation"
             )
 
         if bos != "BULLISH BOS":
-
             missing.append(
                 "Bullish BOS"
             )
 
         if retest != "BULLISH RETEST":
-
             missing.append(
                 "Retest"
             )
@@ -1657,7 +1457,6 @@ def analyze_asset(
     elif bias == "SELL":
 
         if liquidity != "BEARISH SWEEP":
-
             missing.append(
                 "Bearish liquidity sweep"
             )
@@ -1666,19 +1465,16 @@ def analyze_asset(
             "BEARISH ENGULFING",
             "BEARISH CANDLE",
         ):
-
             missing.append(
                 "Bearish candle confirmation"
             )
 
         if bos != "BEARISH BOS":
-
             missing.append(
                 "Bearish BOS"
             )
 
         if retest != "BEARISH RETEST":
-
             missing.append(
                 "Retest"
             )
@@ -1690,6 +1486,8 @@ def analyze_asset(
         )
 
     return {
+        "market_open": True,
+        "market_reason": "OPEN",
         "price": price,
         "direction": direction,
         "bias": bias,
@@ -1724,25 +1522,26 @@ def analyze_asset(
 
 
 # ============================================================
-# FORMAT PRICE
+# FORMAT CLOSED MARKET
 # ============================================================
 
-def format_price(
-    value,
-    asset,
-):
+def format_closed_market(asset, result):
 
-    if value is None:
-        return "N/A"
+    now = datetime.now(MY_TZ)
 
-    if asset == "btc":
+    if asset == "gold":
 
         return (
-            f"${value:,.2f}"
+            "🥇 *GOLD XAUUSD*\n\n"
+            "🔴 *MARKET CLOSED*\n\n"
+            f"🕐 Waktu MY: `{now:%d/%m/%Y %H:%M}`\n\n"
+            "⏳ Gold belum dibuka untuk sesi dagangan.\n"
+            "🚫 Signal Gold tidak dikira menggunakan candle lama.\n\n"
+            "📌 Cuba semula apabila market Gold dibuka."
         )
 
     return (
-        f"${value:,.2f}"
+        "❌ Market tidak tersedia sekarang."
     )
 
 
@@ -1750,17 +1549,21 @@ def format_price(
 # FORMAT SIGNAL
 # ============================================================
 
-def format_signal(
-    asset,
-    result,
-):
+def format_signal(asset, result):
 
     if result is None:
 
         return (
             "❌ *DATA CANDLE GAGAL*\n\n"
-            "15M candle tidak mencukupi.\n"
+            "Data market tidak mencukupi.\n"
             "Cuba semula beberapa saat lagi."
+        )
+
+    if not result.get("market_open", True):
+
+        return format_closed_market(
+            asset,
+            result,
         )
 
     if asset == "gold":
@@ -1776,27 +1579,20 @@ def format_signal(
     price = result["price"]
 
     direction = result["direction"]
+
     bias = result["bias"]
 
-    confidence = result[
-        "confidence"
-    ]
+    confidence = result["confidence"]
 
     rsi_value = result["rsi"]
     adx_value = result["adx"]
 
-    if rsi_value is None:
-        rsi_text = "N/A"
-    else:
-        rsi_text = f"{rsi_value:.1f}"
-
-    if adx_value is None:
-        adx_text = "N/A"
-    else:
-        adx_text = f"{adx_value:.1f}"
+    # ========================================================
+    # HEADER
+    # ========================================================
 
     message = (
-        f"{emoji} *{name} SIGNAL V7*\n\n"
+        f"{emoji} *{name} SIGNAL V7.1*\n\n"
         f"💰 Harga: `${price:,.2f}`\n"
     )
 
@@ -1804,14 +1600,14 @@ def format_signal(
 
         message += (
             "\n🟢 *SIGNAL: BUY*\n"
-            "🚀 Entry trigger lengkap\n"
+            "🚀 Entry trigger aktif\n"
         )
 
     elif direction == "SELL":
 
         message += (
             "\n🔴 *SIGNAL: SELL*\n"
-            "🚀 Entry trigger lengkap\n"
+            "🚀 Entry trigger aktif\n"
         )
 
     else:
@@ -1826,33 +1622,51 @@ def format_signal(
         f"💯 *Confidence:* `{confidence}%`\n"
         f"🎯 *Trigger Score:* "
         f"`{result['trigger_score']}/100`\n"
-        f"📐 *Structure:* "
-        f"`{result['structure']}`\n"
-        f"🕐 *1H Trend:* "
-        f"`{result['h1_trend']}`\n"
-        f"📊 *RSI:* `{rsi_text}`\n"
-        f"📈 *ADX:* `{adx_text}`\n\n"
+        f"📐 *Structure:* `{result['structure']}`\n"
+        f"🕐 *1H Trend:* `{result['h1_trend']}`\n"
+        f"📊 *RSI:* `{rsi_value:.1f}`\n"
+        f"📈 *ADX:* `{adx_value:.1f}`\n\n"
     )
+
+    # ========================================================
+    # LIQUIDITY
+    # ========================================================
 
     message += (
         "💧 *LIQUIDITY*\n"
         f"`{result['liquidity']}`\n\n"
     )
 
+    # ========================================================
+    # CANDLE
+    # ========================================================
+
     message += (
         "🕯 *CANDLE CONFIRMATION*\n"
         f"`{result['candle_confirmation']}`\n\n"
     )
+
+    # ========================================================
+    # BOS
+    # ========================================================
 
     message += (
         "📐 *BREAK OF STRUCTURE*\n"
         f"`{result['bos']}`\n\n"
     )
 
+    # ========================================================
+    # RETEST
+    # ========================================================
+
     message += (
         "🔄 *RETEST*\n"
         f"`{result['retest']}`\n\n"
     )
+
+    # ========================================================
+    # ENTRY TRIGGER
+    # ========================================================
 
     if direction == "BUY":
 
@@ -1870,80 +1684,72 @@ def format_signal(
 
         if bias == "BUY":
 
-            if (
-                result["liquidity"]
-                != "BULLISH SWEEP"
-            ):
+            if result["liquidity"] != "BULLISH SWEEP":
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "BULLISH SWEEP"
+                    "🟡 WAIT FOR BULLISH SWEEP"
                 )
 
-            elif (
-                result["bos"]
-                != "BULLISH BOS"
+            elif result["candle_confirmation"] not in (
+                "BULLISH ENGULFING",
+                "BULLISH CANDLE",
             ):
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "BULLISH BOS"
+                    "🟡 WAIT FOR BULLISH CANDLE"
                 )
 
-            elif (
-                result["retest"]
-                != "BULLISH RETEST"
-            ):
+            elif result["bos"] != "BULLISH BOS":
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "BULLISH RETEST"
+                    "🟡 WAIT FOR BULLISH BOS"
+                )
+
+            elif result["retest"] != "BULLISH RETEST":
+
+                trigger_text = (
+                    "🟡 WAIT FOR BULLISH RETEST"
                 )
 
             else:
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "CONFIRMATION"
+                    "🟡 WAIT FOR CONFIRMATION"
                 )
 
         elif bias == "SELL":
 
-            if (
-                result["liquidity"]
-                != "BEARISH SWEEP"
-            ):
+            if result["liquidity"] != "BEARISH SWEEP":
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "BEARISH SWEEP"
+                    "🟡 WAIT FOR BEARISH SWEEP"
                 )
 
-            elif (
-                result["bos"]
-                != "BEARISH BOS"
+            elif result["candle_confirmation"] not in (
+                "BEARISH ENGULFING",
+                "BEARISH CANDLE",
             ):
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "BEARISH BOS"
+                    "🟡 WAIT FOR BEARISH CANDLE"
                 )
 
-            elif (
-                result["retest"]
-                != "BEARISH RETEST"
-            ):
+            elif result["bos"] != "BEARISH BOS":
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "BEARISH RETEST"
+                    "🟡 WAIT FOR BEARISH BOS"
+                )
+
+            elif result["retest"] != "BEARISH RETEST":
+
+                trigger_text = (
+                    "🟡 WAIT FOR BEARISH RETEST"
                 )
 
             else:
 
                 trigger_text = (
-                    "🟡 WAIT FOR "
-                    "CONFIRMATION"
+                    "🟡 WAIT FOR CONFIRMATION"
                 )
 
         else:
@@ -1957,6 +1763,10 @@ def format_signal(
         f"{trigger_text}\n\n"
     )
 
+    # ========================================================
+    # ENTRY ZONE
+    # ========================================================
+
     message += (
         "🟡 *ENTRY / WATCH ZONE*\n"
         f"`{result['entry_low']:,.2f}"
@@ -1964,27 +1774,23 @@ def format_signal(
         f"{result['entry_high']:,.2f}`\n\n"
     )
 
-    if (
-        result["swing_low"]
-        is not None
-    ):
+    # ========================================================
+    # SWINGS
+    # ========================================================
 
-        message += (
-            "📉 *SWING LOW*\n"
-            f"`{result['swing_low']:,.2f}`\n\n"
-        )
+    message += (
+        "📉 *SWING LOW*\n"
+        f"`{result['swing_low']:,.2f}`\n\n"
 
-    if (
-        result["swing_high"]
-        is not None
-    ):
+        "📈 *SWING HIGH*\n"
+        f"`{result['swing_high']:,.2f}`\n\n"
+    )
 
-        message += (
-            "📈 *SWING HIGH*\n"
-            f"`{result['swing_high']:,.2f}`\n\n"
-        )
+    # ========================================================
+    # SL / TP
+    # ========================================================
 
-    if direction != "WAIT":
+    if direction in ("BUY", "SELL"):
 
         message += (
             "🛑 *STOP LOSS*\n"
@@ -1997,13 +1803,13 @@ def format_signal(
             f"`{result['tp2']:,.2f}`\n\n"
         )
 
-    message += (
-        "🧠 *ANALYSIS*\n"
-    )
+    # ========================================================
+    # ANALYSIS
+    # ========================================================
 
-    for reason in result[
-        "reasons"
-    ]:
+    message += "🧠 *ANALYSIS*\n"
+
+    for reason in result["reasons"]:
 
         message += (
             f"• {reason}\n"
@@ -2011,17 +1817,17 @@ def format_signal(
 
     if direction == "WAIT":
 
-        message += (
-            "\n⏳ *BELUM LENGKAP*\n"
-        )
+        message += "\n⏳ *BELUM LENGKAP*\n"
 
-        for item in result[
-            "missing"
-        ]:
+        for item in result["missing"]:
 
             message += (
                 f"• Tunggu {item}\n"
             )
+
+    # ========================================================
+    # SOURCE
+    # ========================================================
 
     message += (
         "\n📡 *DATA SOURCE*\n"
@@ -2045,7 +1851,7 @@ async def start(
 ):
 
     text = (
-        "🤖 *GOLD & BTC SIGNAL BOT V7*\n\n"
+        "🤖 *GOLD & BTC SIGNAL BOT V7.1*\n\n"
 
         "📌 *COMMANDS*\n\n"
 
@@ -2061,21 +1867,16 @@ async def start(
         "/news\n"
         "➡️ News monitor\n\n"
 
-        "🧠 *TECHNICAL ENGINE V7*\n"
+        "🧠 *Technical Engine V7.1*\n"
         "📊 15M + 1H\n"
-        "📈 EMA 20/50\n"
-        "📊 RSI\n"
-        "📈 ADX\n"
-        "📐 ATR\n"
-        "🏗 Market Structure\n"
+        "📈 EMA / RSI / ADX / ATR\n"
+        "📐 Market Structure\n"
         "💧 Liquidity Sweep\n"
         "🕯 Candle Confirmation\n"
-        "📐 BOS\n"
+        "📐 Break of Structure\n"
         "🔄 Retest\n"
-        "🎯 Entry Zone\n"
-        "🛑 SL\n"
-        "🎯 TP1 / TP2\n\n"
-
+        "🎯 Entry Zone / SL / TP\n"
+        "🔴 Gold Market Detection\n"
         "🚫 Tiada auto-trading"
     )
 
@@ -2086,7 +1887,7 @@ async def start(
 
 
 # ============================================================
-# PRICE COMMAND
+# PRICE
 # ============================================================
 
 async def price(
@@ -2094,25 +1895,30 @@ async def price(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    status = await update.message.reply_text(
-        "📡 *MENGAMBIL HARGA...*\n\n"
-        "🥇 Checking Gold...\n"
-        "₿ Checking Bitcoin...",
-        parse_mode="Markdown",
+    text = (
+        "📈 *HARGA SEMASA V7.1*\n\n"
     )
 
-    try:
+    # ========================================================
+    # GOLD
+    # ========================================================
 
-        gold, gold_source, gold_method = (
-            get_live_price("gold")
+    gold_open, gold_reason = (
+        gold_market_status()
+    )
+
+    if not gold_open:
+
+        text += (
+            "🥇 *Gold XAUUSD*\n"
+            "🔴 MARKET CLOSED\n"
+            f"Status: `{gold_reason}`\n\n"
         )
 
-        btc, btc_source, btc_method = (
-            get_live_price("btc")
-        )
+    else:
 
-        text = (
-            "📈 *HARGA SEMASA V7*\n\n"
+        gold, gold_source = get_live_price(
+            "gold"
         )
 
         if gold is not None:
@@ -2120,59 +1926,47 @@ async def price(
             text += (
                 "🥇 *Gold XAUUSD*\n"
                 f"`${gold:,.2f}`\n"
-                f"Symbol: `{gold_source}`\n"
-                f"Data: `{gold_method}`\n\n"
+                f"Source: `{gold_source}`\n\n"
             )
 
         else:
 
             text += (
                 "🥇 *Gold XAUUSD*\n"
-                "❌ Gagal mendapatkan data\n\n"
+                "❌ Harga tidak tersedia\n\n"
             )
 
-        if btc is not None:
+    # ========================================================
+    # BTC
+    # ========================================================
 
-            text += (
-                "₿ *Bitcoin BTC*\n"
-                f"`${btc:,.2f}`\n"
-                f"Symbol: `{btc_source}`\n"
-                f"Data: `{btc_method}`\n\n"
-            )
+    btc, btc_source = get_live_price(
+        "btc"
+    )
 
-        else:
-
-            text += (
-                "₿ *Bitcoin BTC*\n"
-                "❌ Gagal mendapatkan data\n\n"
-            )
+    if btc is not None:
 
         text += (
-            "📡 Data: Yahoo Finance\n"
-            "⚠️ Harga mungkin berbeza "
-            "daripada broker MT5."
+            "₿ *Bitcoin BTC*\n"
+            f"`${btc:,.2f}`\n"
+            f"Source: `{btc_source}`\n"
         )
 
-        await status.edit_text(
-            text,
-            parse_mode="Markdown",
+    else:
+
+        text += (
+            "₿ *Bitcoin BTC*\n"
+            "❌ Harga tidak tersedia\n"
         )
 
-    except Exception as e:
-
-        logger.exception(
-            "Price error"
-        )
-
-        await status.edit_text(
-            "❌ *PRICE ERROR*\n\n"
-            f"`{str(e)}`",
-            parse_mode="Markdown",
-        )
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+    )
 
 
 # ============================================================
-# SIGNAL COMMAND
+# SIGNAL
 # ============================================================
 
 async def signal(
@@ -2190,10 +1984,7 @@ async def signal(
 
         return
 
-    asset = (
-        context.args[0]
-        .lower()
-    )
+    asset = context.args[0].lower()
 
     if asset not in (
         "gold",
@@ -2209,15 +2000,13 @@ async def signal(
         return
 
     status = await update.message.reply_text(
-        "🧠 *SIGNAL V7*\n\n"
+        "🧠 *SIGNAL V7.1*\n\n"
         "📡 Mengambil market data...\n"
-        "📊 Analysing 15M...\n"
-        "🕐 Analysing 1H...\n"
-        "💧 Checking liquidity...\n"
-        "🕯 Checking candle...\n"
-        "📐 Checking BOS...\n"
-        "🔄 Checking retest...\n"
-        "🎯 Calculating SL/TP...\n\n"
+        "📊 15M + 1H\n"
+        "💧 Check liquidity...\n"
+        "🕯 Check candle...\n"
+        "📐 Check BOS...\n"
+        "🔄 Check retest...\n"
         "⏳ Sila tunggu...",
         parse_mode="Markdown",
     )
@@ -2261,25 +2050,22 @@ async def news(
 ):
 
     text = (
-        "📰 *NEWS MONITOR V7*\n\n"
+        "📰 *NEWS MONITOR V7.1*\n\n"
 
         "🥇 *GOLD*\n"
         "• USD Index\n"
         "• Federal Reserve\n"
         "• US CPI\n"
         "• NFP\n"
-        "• Interest Rate\n"
-        "• US Jobs Data\n\n"
+        "• Interest Rate\n\n"
 
         "₿ *BITCOIN*\n"
         "• ETF Flow\n"
         "• Funding Rate\n"
         "• BTC Dominance\n"
-        "• US Macro Data\n"
-        "• Federal Reserve\n\n"
+        "• US Macro Data\n\n"
 
-        "⚠️ News engine live belum "
-        "disambungkan."
+        "⚠️ News engine belum live."
     )
 
     await update.message.reply_text(
@@ -2289,7 +2075,7 @@ async def news(
 
 
 # ============================================================
-# ERROR HANDLER
+# ERROR
 # ============================================================
 
 async def error_handler(
@@ -2310,29 +2096,17 @@ async def error_handler(
 def main():
 
     print("")
-    print(
-        "=========================================="
-    )
-    print(
-        "🤖 GOLD & BTC SIGNAL BOT V7"
-    )
-    print(
-        "=========================================="
-    )
+    print("==========================================")
+    print("🤖 GOLD & BTC SIGNAL BOT V7.1")
+    print("==========================================")
 
     if not TOKEN:
 
         print("")
-        print(
-            "❌ BOT_TOKEN TIDAK DIJUMPAI"
-        )
+        print("❌ BOT_TOKEN TIDAK DIJUMPAI")
         print("")
-        print(
-            "Railway Variables:"
-        )
-        print(
-            "BOT_TOKEN = token BotFather"
-        )
+        print("Set Railway Variable:")
+        print("BOT_TOKEN = token BotFather")
         print("")
 
         return
@@ -2342,7 +2116,7 @@ def main():
     )
 
     print(
-        "🚀 Starting V7..."
+        "🚀 Starting V7.1..."
     )
 
     try:
@@ -2387,7 +2161,7 @@ def main():
         )
 
         print(
-            "🚀 V7 BOT AKTIF!"
+            "🚀 V7.1 BOT AKTIF!"
         )
 
         print(
@@ -2395,11 +2169,11 @@ def main():
         )
 
         print(
-            "🥇 Gold: GC=F / XAUUSD=X"
+            "🥇 Gold market detection ACTIVE"
         )
 
         print(
-            "₿ BTC: BTC-USD"
+            "₿ BTC 24/7"
         )
 
         print(
@@ -2444,9 +2218,11 @@ def main():
         print(
             "❌ BOT ERROR"
         )
+
         print(
             str(e)
         )
+
         print("")
 
         logger.exception(
