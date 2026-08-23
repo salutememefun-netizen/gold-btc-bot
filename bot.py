@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-import math
+from datetime import datetime
 
 from telegram import Update
 from telegram.ext import (
@@ -11,43 +11,48 @@ from telegram.ext import (
 )
 
 # ============================================================
-# LOGGING
+# CONFIG
 # ============================================================
+
+TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.INFO
 )
 
 logger = logging.getLogger(__name__)
 
-TOKEN = os.getenv("BOT_TOKEN")
-
-# ============================================================
-# SYMBOLS
-# ============================================================
-
-YAHOO_SYMBOLS = {
+SYMBOLS = {
     "gold": "XAUUSD=X",
-    "btc": "BTC-USD",
+    "btc": "BTC-USD"
 }
 
+
 # ============================================================
-# GENERIC HTTP
+# YAHOO CANDLE
 # ============================================================
 
-def yahoo_candles(symbol, interval="15m", range_value="5d"):
+def get_candles(asset, interval="15m", period="5d"):
 
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    symbol = SYMBOLS.get(asset)
+
+    if not symbol:
+        return [], "Symbol tidak sah"
+
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        + symbol
+    )
 
     params = {
         "interval": interval,
-        "range": range_value,
-        "includePrePost": "true",
-        "events": "div,splits"
+        "range": period,
+        "includePrePost": "true"
     }
 
     try:
+
         response = requests.get(
             url,
             params=params,
@@ -57,19 +62,50 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
             timeout=20
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+
+            return [], (
+                f"HTTP {response.status_code}"
+            )
 
         data = response.json()
 
-        result = data["chart"]["result"]
+        chart = data.get("chart", {})
 
-        if not result:
-            return []
+        error = chart.get("error")
 
-        result = result[0]
+        if error:
 
-        timestamps = result.get("timestamp", [])
-        quote = result["indicators"]["quote"][0]
+            return [], str(error)
+
+        results = chart.get("result")
+
+        if not results:
+
+            return [], "Yahoo tidak pulangkan result"
+
+        result = results[0]
+
+        timestamps = result.get(
+            "timestamp",
+            []
+        )
+
+        indicators = result.get(
+            "indicators",
+            {}
+        )
+
+        quotes = indicators.get(
+            "quote",
+            []
+        )
+
+        if not quotes:
+
+            return [], "Quote candle kosong"
+
+        quote = quotes[0]
 
         opens = quote.get("open", [])
         highs = quote.get("high", [])
@@ -78,15 +114,15 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
 
         candles = []
 
-        for i in range(len(timestamps)):
+        length = min(
+            len(timestamps),
+            len(opens),
+            len(highs),
+            len(lows),
+            len(closes)
+        )
 
-            if (
-                i >= len(opens)
-                or i >= len(highs)
-                or i >= len(lows)
-                or i >= len(closes)
-            ):
-                continue
+        for i in range(length):
 
             if (
                 opens[i] is None
@@ -101,68 +137,73 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
                 "open": float(opens[i]),
                 "high": float(highs[i]),
                 "low": float(lows[i]),
-                "close": float(closes[i]),
+                "close": float(closes[i])
             })
 
-        return candles
+        if not candles:
+
+            return [], "Candle kosong"
+
+        return candles, None
 
     except Exception as e:
 
-        logger.error(
-            f"Yahoo candle error {symbol}: {e}"
+        logger.exception(
+            "Candle error"
         )
 
-        return []
+        return [], str(e)
 
 
 # ============================================================
 # PRICE
 # ============================================================
 
-def get_live_price(asset):
+def get_price(asset):
 
-    symbol = YAHOO_SYMBOLS[asset]
-
-    candles = yahoo_candles(
-        symbol,
-        "1m",
+    candles, error = get_candles(
+        asset,
+        "5m",
         "1d"
     )
 
     if not candles:
-        return None
 
-    return candles[-1]["close"]
+        return None, error
+
+    return candles[-1]["close"], None
 
 
 # ============================================================
 # EMA
 # ============================================================
 
-def ema(values, period):
+def calculate_ema(values, period):
 
     if len(values) < period:
         return None
 
     multiplier = 2 / (period + 1)
 
-    value = sum(values[:period]) / period
+    ema_value = sum(
+        values[:period]
+    ) / period
 
     for price in values[period:]:
 
-        value = (
-            (price - value) * multiplier
-            + value
-        )
+        ema_value = (
+            (price - ema_value)
+            * multiplier
+        ) + ema_value
 
-    return value
+    return ema_value
 
 
 # ============================================================
 # RSI
 # ============================================================
 
-def rsi(values, period=14):
+def calculate_rsi(values, period=14):
 
     if len(values) < period + 1:
         return None
@@ -172,29 +213,45 @@ def rsi(values, period=14):
 
     for i in range(1, len(values)):
 
-        change = values[i] - values[i - 1]
+        change = (
+            values[i] -
+            values[i - 1]
+        )
 
         if change > 0:
+
             gains.append(change)
             losses.append(0)
 
         else:
+
             gains.append(0)
             losses.append(abs(change))
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    avg_gain = (
+        sum(gains[:period]) /
+        period
+    )
+
+    avg_loss = (
+        sum(losses[:period]) /
+        period
+    )
 
     for i in range(period, len(gains)):
 
         avg_gain = (
-            (avg_gain * (period - 1))
-            + gains[i]
+            (
+                avg_gain *
+                (period - 1)
+            ) + gains[i]
         ) / period
 
         avg_loss = (
-            (avg_loss * (period - 1))
-            + losses[i]
+            (
+                avg_loss *
+                (period - 1)
+            ) + losses[i]
         ) / period
 
     if avg_loss == 0:
@@ -202,14 +259,16 @@ def rsi(values, period=14):
 
     rs = avg_gain / avg_loss
 
-    return 100 - (100 / (1 + rs))
+    return 100 - (
+        100 / (1 + rs)
+    )
 
 
 # ============================================================
 # ATR
 # ============================================================
 
-def atr(candles, period=14):
+def calculate_atr(candles, period=14):
 
     if len(candles) < period + 1:
         return None
@@ -222,14 +281,17 @@ def atr(candles, period=14):
         previous = candles[i - 1]
 
         tr = max(
-            current["high"] - current["low"],
+            current["high"] -
+            current["low"],
+
             abs(
-                current["high"]
-                - previous["close"]
+                current["high"] -
+                previous["close"]
             ),
+
             abs(
-                current["low"]
-                - previous["close"]
+                current["low"] -
+                previous["close"]
             )
         )
 
@@ -238,13 +300,18 @@ def atr(candles, period=14):
     if len(trs) < period:
         return None
 
-    value = sum(trs[:period]) / period
+    value = (
+        sum(trs[:period]) /
+        period
+    )
 
     for tr in trs[period:]:
 
         value = (
-            (value * (period - 1))
-            + tr
+            (
+                value *
+                (period - 1)
+            ) + tr
         ) / period
 
     return value
@@ -254,9 +321,9 @@ def atr(candles, period=14):
 # ADX
 # ============================================================
 
-def adx(candles, period=14):
+def calculate_adx(candles, period=14):
 
-    if len(candles) < period * 2:
+    if len(candles) < 40:
         return None
 
     trs = []
@@ -268,367 +335,429 @@ def adx(candles, period=14):
         current = candles[i]
         previous = candles[i - 1]
 
-        high_diff = (
-            current["high"]
-            - previous["high"]
+        high_move = (
+            current["high"] -
+            previous["high"]
         )
 
-        low_diff = (
-            previous["low"]
-            - current["low"]
+        low_move = (
+            previous["low"] -
+            current["low"]
         )
 
         tr = max(
-            current["high"] - current["low"],
+            current["high"] -
+            current["low"],
+
             abs(
-                current["high"]
-                - previous["close"]
+                current["high"] -
+                previous["close"]
             ),
+
             abs(
-                current["low"]
-                - previous["close"]
+                current["low"] -
+                previous["close"]
             )
         )
 
         trs.append(tr)
 
-        plus_dm.append(
-            high_diff
-            if high_diff > low_diff
-            and high_diff > 0
-            else 0
-        )
+        if (
+            high_move > low_move
+            and high_move > 0
+        ):
 
-        minus_dm.append(
-            low_diff
-            if low_diff > high_diff
-            and low_diff > 0
-            else 0
-        )
+            plus_dm.append(high_move)
 
-    if len(trs) < period * 2:
-        return None
+        else:
 
-    tr_avg = sum(trs[:period]) / period
-    plus_avg = sum(plus_dm[:period]) / period
-    minus_avg = sum(minus_dm[:period]) / period
+            plus_dm.append(0)
 
-    dx_values = []
+        if (
+            low_move > high_move
+            and low_move > 0
+        ):
+
+            minus_dm.append(low_move)
+
+        else:
+
+            minus_dm.append(0)
+
+    tr_avg = (
+        sum(trs[:period]) /
+        period
+    )
+
+    plus_avg = (
+        sum(plus_dm[:period]) /
+        period
+    )
+
+    minus_avg = (
+        sum(minus_dm[:period]) /
+        period
+    )
+
+    dx = []
 
     for i in range(period, len(trs)):
 
         tr_avg = (
-            (tr_avg * (period - 1))
-            + trs[i]
+            (
+                tr_avg *
+                (period - 1)
+            ) + trs[i]
         ) / period
 
         plus_avg = (
-            (plus_avg * (period - 1))
-            + plus_dm[i]
+            (
+                plus_avg *
+                (period - 1)
+            ) + plus_dm[i]
         ) / period
 
         minus_avg = (
-            (minus_avg * (period - 1))
-            + minus_dm[i]
+            (
+                minus_avg *
+                (period - 1)
+            ) + minus_dm[i]
         ) / period
 
         if tr_avg == 0:
             continue
 
         plus_di = (
-            100 * plus_avg / tr_avg
+            100 *
+            plus_avg /
+            tr_avg
         )
 
         minus_di = (
-            100 * minus_avg / tr_avg
+            100 *
+            minus_avg /
+            tr_avg
         )
 
-        denominator = plus_di + minus_di
+        total = (
+            plus_di +
+            minus_di
+        )
 
-        if denominator == 0:
+        if total == 0:
             continue
 
-        dx = (
-            100
-            * abs(plus_di - minus_di)
-            / denominator
+        value = (
+            100 *
+            abs(
+                plus_di -
+                minus_di
+            ) /
+            total
         )
 
-        dx_values.append(dx)
+        dx.append(value)
 
-    if len(dx_values) < period:
+    if len(dx) < period:
         return None
 
-    return sum(dx_values[-period:]) / period
+    return sum(dx[-period:]) / period
 
 
 # ============================================================
 # MARKET STRUCTURE
 # ============================================================
 
-def market_structure(candles):
+def get_structure(candles):
 
-    if len(candles) < 10:
+    if len(candles) < 20:
         return "NEUTRAL"
 
-    recent = candles[-10:]
+    recent = candles[-20:]
 
-    highs = [
-        c["high"]
-        for c in recent
-    ]
+    first = recent[:10]
+    second = recent[10:]
 
-    lows = [
-        c["low"]
-        for c in recent
-    ]
-
-    first_half_high = max(
-        highs[:5]
+    first_high = max(
+        c["high"] for c in first
     )
 
-    second_half_high = max(
-        highs[5:]
+    second_high = max(
+        c["high"] for c in second
     )
 
-    first_half_low = min(
-        lows[:5]
+    first_low = min(
+        c["low"] for c in first
     )
 
-    second_half_low = min(
-        lows[5:]
+    second_low = min(
+        c["low"] for c in second
     )
 
     if (
-        second_half_high > first_half_high
-        and second_half_low > first_half_low
+        second_high > first_high
+        and second_low > first_low
     ):
+
         return "BULLISH"
 
     if (
-        second_half_high < first_half_high
-        and second_half_low < first_half_low
+        second_high < first_high
+        and second_low < first_low
     ):
+
         return "BEARISH"
 
     return "NEUTRAL"
 
 
 # ============================================================
-# ANALYZE
+# ANALYSIS
 # ============================================================
 
-def analyze_asset(asset):
+def analyze(asset):
 
-    symbol = YAHOO_SYMBOLS[asset]
-
-    candles_15m = yahoo_candles(
-        symbol,
+    candles15, error15 = get_candles(
+        asset,
         "15m",
         "5d"
     )
 
-    candles_1h = yahoo_candles(
-        symbol,
+    candles1h, error1h = get_candles(
+        asset,
         "1h",
         "1mo"
     )
 
-    if len(candles_15m) < 60:
-        return None
+    # --------------------------------------------------------
+    # DATA CHECK
+    # --------------------------------------------------------
+
+    if len(candles15) < 60:
+
+        return {
+            "ok": False,
+            "error": (
+                f"15M candle tidak cukup "
+                f"({len(candles15)} candle). "
+                f"Sumber: {error15}"
+            )
+        }
+
+    if len(candles1h) < 50:
+
+        return {
+            "ok": False,
+            "error": (
+                f"1H candle tidak cukup "
+                f"({len(candles1h)} candle). "
+                f"Sumber: {error1h}"
+            )
+        }
+
+    # --------------------------------------------------------
+    # 15M
+    # --------------------------------------------------------
 
     closes = [
         c["close"]
-        for c in candles_15m
+        for c in candles15
     ]
 
     price = closes[-1]
 
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
+    ema20 = calculate_ema(
+        closes,
+        20
+    )
 
-    rsi_value = rsi(
+    ema50 = calculate_ema(
+        closes,
+        50
+    )
+
+    rsi = calculate_rsi(
         closes,
         14
     )
 
-    atr_value = atr(
-        candles_15m,
+    atr = calculate_atr(
+        candles15,
         14
     )
 
-    adx_value = adx(
-        candles_15m,
+    adx = calculate_adx(
+        candles15,
         14
     )
 
-    structure = market_structure(
-        candles_15m
+    structure = get_structure(
+        candles15
     )
 
     # --------------------------------------------------------
-    # 1H TREND
+    # 1H
     # --------------------------------------------------------
 
-    h1_trend = "NEUTRAL"
+    h1_closes = [
+        c["close"]
+        for c in candles1h
+    ]
 
-    if len(candles_1h) >= 50:
+    h1_ema20 = calculate_ema(
+        h1_closes,
+        20
+    )
 
-        h1_closes = [
-            c["close"]
-            for c in candles_1h
-        ]
+    h1_ema50 = calculate_ema(
+        h1_closes,
+        50
+    )
 
-        h1_ema20 = ema(
-            h1_closes,
-            20
-        )
+    if (
+        h1_ema20 is not None
+        and h1_ema50 is not None
+    ):
 
-        h1_ema50 = ema(
-            h1_closes,
-            50
-        )
+        if h1_ema20 > h1_ema50:
+            h1_trend = "BULLISH"
 
-        if (
-            h1_ema20 is not None
-            and h1_ema50 is not None
-        ):
+        elif h1_ema20 < h1_ema50:
+            h1_trend = "BEARISH"
 
-            if h1_ema20 > h1_ema50:
-                h1_trend = "BULLISH"
+        else:
+            h1_trend = "NEUTRAL"
 
-            elif h1_ema20 < h1_ema50:
-                h1_trend = "BEARISH"
+    else:
+
+        h1_trend = "NEUTRAL"
 
     # --------------------------------------------------------
     # SCORE
     # --------------------------------------------------------
 
-    buy_score = 0
-    sell_score = 0
+    buy = 0
+    sell = 0
 
     reasons_buy = []
     reasons_sell = []
 
     # EMA
 
-    if ema20 and ema50:
+    if ema20 > ema50:
 
-        if ema20 > ema50:
+        buy += 20
 
-            buy_score += 20
-            reasons_buy.append(
-                "EMA20 > EMA50"
-            )
+        reasons_buy.append(
+            "EMA20 > EMA50"
+        )
 
-        elif ema20 < ema50:
+    elif ema20 < ema50:
 
-            sell_score += 20
-            reasons_sell.append(
-                "EMA20 < EMA50"
-            )
+        sell += 20
+
+        reasons_sell.append(
+            "EMA20 < EMA50"
+        )
 
     # RSI
 
-    if rsi_value is not None:
+    if rsi is not None:
 
-        if 50 < rsi_value < 70:
+        if rsi > 50:
 
-            buy_score += 15
+            buy += 15
+
             reasons_buy.append(
-                "RSI bullish"
+                "RSI > 50"
             )
 
-        elif 30 < rsi_value < 50:
+        elif rsi < 50:
 
-            sell_score += 15
+            sell += 15
+
             reasons_sell.append(
-                "RSI bearish"
+                "RSI < 50"
             )
-
-    # ADX
-
-    if adx_value is not None:
-
-        if adx_value >= 25:
-
-            if buy_score > sell_score:
-
-                buy_score += 15
-
-                reasons_buy.append(
-                    "ADX trend kuat"
-                )
-
-            elif sell_score > buy_score:
-
-                sell_score += 15
-
-                reasons_sell.append(
-                    "ADX trend kuat"
-                )
 
     # Structure
 
     if structure == "BULLISH":
 
-        buy_score += 20
+        buy += 20
+
         reasons_buy.append(
-            "Market structure bullish"
+            "Structure bullish"
         )
 
     elif structure == "BEARISH":
 
-        sell_score += 20
+        sell += 20
+
         reasons_sell.append(
-            "Market structure bearish"
+            "Structure bearish"
         )
 
-    # 1H
+    # H1
 
     if h1_trend == "BULLISH":
 
-        buy_score += 20
+        buy += 20
+
         reasons_buy.append(
-            "1H trend bullish"
+            "1H bullish"
         )
 
     elif h1_trend == "BEARISH":
 
-        sell_score += 20
+        sell += 20
+
         reasons_sell.append(
-            "1H trend bearish"
+            "1H bearish"
         )
+
+    # ADX
+
+    if adx is not None and adx >= 25:
+
+        if buy > sell:
+
+            buy += 15
+
+            reasons_buy.append(
+                "ADX trend kuat"
+            )
+
+        elif sell > buy:
+
+            sell += 15
+
+            reasons_sell.append(
+                "ADX trend kuat"
+            )
 
     # --------------------------------------------------------
     # SIGNAL
     # --------------------------------------------------------
 
-    if (
-        buy_score >= 55
-        and buy_score > sell_score
-    ):
+    if buy >= 60 and buy > sell:
 
         direction = "BUY"
-        confidence = buy_score
+        confidence = buy
         reasons = reasons_buy
 
-    elif (
-        sell_score >= 55
-        and sell_score > buy_score
-    ):
+    elif sell >= 60 and sell > buy:
 
         direction = "SELL"
-        confidence = sell_score
+        confidence = sell
         reasons = reasons_sell
 
     else:
 
         direction = "WAIT"
-
         confidence = max(
-            buy_score,
-            sell_score
+            buy,
+            sell
         )
 
         reasons = [
@@ -636,65 +765,69 @@ def analyze_asset(asset):
         ]
 
     # --------------------------------------------------------
-    # PRICE LEVELS
+    # ATR FALLBACK
     # --------------------------------------------------------
 
-    if atr_value is None:
+    if atr is None or atr <= 0:
 
-        atr_value = price * 0.005
+        atr = price * 0.005
+
+    # --------------------------------------------------------
+    # LEVELS
+    # --------------------------------------------------------
 
     if direction == "BUY":
 
         entry_low = price - (
-            atr_value * 0.25
+            atr * 0.25
         )
 
         entry_high = price + (
-            atr_value * 0.25
+            atr * 0.25
         )
 
         sl = price - (
-            atr_value * 1.2
+            atr * 1.2
         )
 
         tp1 = price + (
-            atr_value * 1.2
+            atr * 1.2
         )
 
         tp2 = price + (
-            atr_value * 2.0
+            atr * 2
         )
 
     elif direction == "SELL":
 
         entry_low = price - (
-            atr_value * 0.25
+            atr * 0.25
         )
 
         entry_high = price + (
-            atr_value * 0.25
+            atr * 0.25
         )
 
         sl = price + (
-            atr_value * 1.2
+            atr * 1.2
         )
 
         tp1 = price - (
-            atr_value * 1.2
+            atr * 1.2
         )
 
         tp2 = price - (
-            atr_value * 2.0
+            atr * 2
         )
 
     else:
 
         entry_low = price - (
-            atr_value * 0.25
+            atr * 0.25
         )
 
         entry_high = price + (
-            atr_value * 0.25
+            atr * 0.25
         )
 
         sl = None
@@ -702,36 +835,36 @@ def analyze_asset(asset):
         tp2 = None
 
     return {
+        "ok": True,
         "price": price,
         "direction": direction,
         "confidence": confidence,
-        "ema20": ema20,
-        "ema50": ema50,
-        "rsi": rsi_value,
-        "adx": adx_value,
-        "atr": atr_value,
         "structure": structure,
-        "h1_trend": h1_trend,
+        "h1": h1_trend,
+        "rsi": rsi,
+        "adx": adx,
+        "atr": atr,
         "entry_low": entry_low,
         "entry_high": entry_high,
         "sl": sl,
         "tp1": tp1,
         "tp2": tp2,
-        "reasons": reasons,
+        "reasons": reasons
     }
 
 
 # ============================================================
-# FORMAT SIGNAL
+# FORMAT
 # ============================================================
 
-def format_signal(asset, result):
+def format_result(asset, result):
 
-    if result is None:
+    if not result["ok"]:
 
         return (
-            "❌ Data candle tidak tersedia.\n"
-            "Cuba semula dalam beberapa saat."
+            "❌ *DATA CANDLE GAGAL*\n\n"
+            f"{result['error']}\n\n"
+            "🔄 Cuba semula beberapa saat lagi."
         )
 
     name = (
@@ -740,80 +873,63 @@ def format_signal(asset, result):
         else "BTC"
     )
 
-    price = result["price"]
-
     direction = result["direction"]
-
-    confidence = result["confidence"]
-
-    structure = result["structure"]
-
-    h1_trend = result["h1_trend"]
-
-    rsi_value = result["rsi"]
-
-    adx_value = result["adx"]
-
-    entry_low = result["entry_low"]
-
-    entry_high = result["entry_high"]
-
-    message = (
-        f"📊 *{name} AI SIGNAL V3*\n\n"
-
-        f"💰 Harga: `${price:,.2f}`\n\n"
-    )
 
     if direction == "BUY":
 
-        message += "🟢 *SIGNAL: BUY*\n\n"
+        signal_text = "🟢 *BUY*"
 
     elif direction == "SELL":
 
-        message += "🔴 *SIGNAL: SELL*\n\n"
+        signal_text = "🔴 *SELL*"
 
     else:
 
-        message += "🟡 *SIGNAL: WAIT*\n\n"
+        signal_text = "🟡 *WAIT*"
 
-    message += (
-        f"💯 *Confidence:* `{confidence}%`\n"
-        f"📐 *Structure:* `{structure}`\n"
-        f"🕐 *1H Trend:* `{h1_trend}`\n"
-        f"📊 *RSI:* `{rsi_value:.1f}`\n"
-        f"📈 *ADX:* `{adx_value:.1f}`\n\n"
-    )
+    text = (
+        f"📊 *{name} AI SIGNAL V4*\n\n"
 
-    message += (
-        f"🟢 *Entry Zone*\n"
-        f"`{entry_low:,.2f} – {entry_high:,.2f}`\n\n"
+        f"💰 Harga: `${result['price']:,.2f}`\n"
+        f"🎯 Signal: {signal_text}\n"
+        f"💯 Confidence: `{result['confidence']}%`\n\n"
+
+        f"📐 Structure: `{result['structure']}`\n"
+        f"🕐 1H Trend: `{result['h1']}`\n"
+        f"📊 RSI: `{result['rsi']:.1f}`\n"
+        f"📈 ADX: `{result['adx']:.1f}`\n\n"
+
+        f"🟢 Entry:\n"
+        f"`{result['entry_low']:,.2f} – "
+        f"{result['entry_high']:,.2f}`\n\n"
     )
 
     if direction != "WAIT":
 
-        message += (
-            f"🛑 *Stop Loss*\n"
+        text += (
+            f"🛑 SL:\n"
             f"`{result['sl']:,.2f}`\n\n"
 
-            f"🎯 *TP1*\n"
+            f"🎯 TP1:\n"
             f"`{result['tp1']:,.2f}`\n\n"
 
-            f"🎯 *TP2*\n"
+            f"🎯 TP2:\n"
             f"`{result['tp2']:,.2f}`\n\n"
         )
 
-    message += "🧠 *Analysis:*\n"
+    text += "🧠 *Sebab signal:*\n"
 
     for reason in result["reasons"]:
 
-        message += f"• {reason}\n"
+        text += f"• {reason}\n"
 
-    message += (
-        "\n⚠️ Signal berdasarkan data teknikal. "
-        "Bukan jaminan profit."
+    text += (
+        "\n⚠️ Analisis teknikal sahaja. "
+        "Bukan jaminan profit.\n"
+        "🚫 Tiada auto-trading."
     )
 
-    return message
+    return text
 
 
 # ============================================================
@@ -825,30 +941,15 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    text = (
-        "🤖 *GOLD & BTC SIGNAL BOT V3*\n\n"
-
-        "📌 Commands:\n\n"
-
-        "/price\n"
-        "➡️ Harga semasa\n\n"
-
-        "/signal gold\n"
-        "➡️ AI signal Gold\n\n"
-
-        "/signal btc\n"
-        "➡️ AI signal BTC\n\n"
-
-        "/news\n"
-        "➡️ News monitor\n\n"
-
-        "🧠 Technical engine aktif\n"
-        "📊 15M + 1H analysis\n"
-        "🚫 Tiada auto-trading"
-    )
-
     await update.message.reply_text(
-        text,
+        "🤖 *GOLD & BTC SIGNAL BOT V4*\n\n"
+        "/price — Harga semasa\n"
+        "/signal gold — Signal Gold\n"
+        "/signal btc — Signal BTC\n"
+        "/news — News monitor\n\n"
+        "📊 Engine: 15M + 1H\n"
+        "🧠 EMA + RSI + ADX + Structure + ATR\n"
+        "🚫 Tiada auto-trading.",
         parse_mode="Markdown"
     )
 
@@ -862,35 +963,37 @@ async def price(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    gold = get_live_price("gold")
-    btc = get_live_price("btc")
+    gold, gold_error = get_price("gold")
+    btc, btc_error = get_price("btc")
 
     text = "📈 *HARGA SEMASA*\n\n"
 
     if gold is not None:
 
         text += (
-            f"🥇 *Gold XAUUSD*\n"
+            f"🥇 Gold XAUUSD\n"
             f"`${gold:,.2f}`\n\n"
         )
 
     else:
 
         text += (
-            "🥇 Gold: ❌ Data gagal\n\n"
+            "🥇 Gold: ❌ Gagal\n"
+            f"`{gold_error}`\n\n"
         )
 
     if btc is not None:
 
         text += (
-            f"₿ *Bitcoin BTC*\n"
+            f"₿ Bitcoin BTC\n"
             f"`${btc:,.2f}`\n"
         )
 
     else:
 
         text += (
-            "₿ BTC: ❌ Data gagal\n"
+            "₿ BTC: ❌ Gagal\n"
+            f"`{btc_error}`\n"
         )
 
     await update.message.reply_text(
@@ -920,7 +1023,7 @@ async def signal(
 
     asset = context.args[0].lower()
 
-    if asset not in ["gold", "btc"]:
+    if asset not in SYMBOLS:
 
         await update.message.reply_text(
             "❌ Asset tidak disokong.\n\n"
@@ -930,23 +1033,34 @@ async def signal(
 
         return
 
-    await update.message.reply_text(
-        "🧠 Menganalisis market...\n"
-        "📊 15M + 1H\n"
-        "⏳ Sila tunggu..."
+    status = await update.message.reply_text(
+        "🧠 *MENGANALISIS MARKET...*\n\n"
+        f"🪙 Asset: `{asset.upper()}`\n"
+        "📊 Timeframe: `15M + 1H`\n"
+        "⏳ Mengambil candle sebenar...",
+        parse_mode="Markdown"
     )
 
-    result = analyze_asset(asset)
+    result = analyze(asset)
 
-    message = format_signal(
+    message = format_result(
         asset,
         result
     )
 
-    await update.message.reply_text(
-        message,
-        parse_mode="Markdown"
-    )
+    try:
+
+        await status.edit_text(
+            message,
+            parse_mode="Markdown"
+        )
+
+    except Exception:
+
+        await update.message.reply_text(
+            message,
+            parse_mode="Markdown"
+        )
 
 
 # ============================================================
@@ -958,28 +1072,20 @@ async def news(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    text = (
-        "📰 *NEWS MONITOR V3*\n\n"
-
-        "🥇 *GOLD*\n"
+    await update.message.reply_text(
+        "📰 *NEWS MONITOR V4*\n\n"
+        "🥇 GOLD\n"
         "• USD Index\n"
         "• Federal Reserve\n"
-        "• US CPI\n"
+        "• CPI\n"
         "• NFP\n"
-        "• Interest rate\n\n"
-
-        "₿ *BITCOIN*\n"
-        "• ETF flow\n"
-        "• Funding rate\n"
-        "• BTC dominance\n"
-        "• US macro data\n\n"
-
-        "⚠️ News engine akan ditambah "
-        "selepas technical engine stabil."
-    )
-
-    await update.message.reply_text(
-        text,
+        "• Interest Rate\n\n"
+        "₿ BTC\n"
+        "• ETF Flow\n"
+        "• Funding Rate\n"
+        "• BTC Dominance\n"
+        "• US Macro\n\n"
+        "⚠️ News engine belum disambungkan.",
         parse_mode="Markdown"
     )
 
@@ -1006,66 +1112,64 @@ async def error_handler(
 def main():
 
     print("")
-    print("==========================================")
-    print("🤖 GOLD & BTC TELEGRAM BOT V3")
-    print("==========================================")
+    print("======================================")
+    print("🤖 GOLD & BTC SIGNAL BOT V4")
+    print("======================================")
 
     if not TOKEN:
 
-        print("❌ BOT_TOKEN TIDAK DIJUMPAI!")
+        print("❌ BOT_TOKEN tidak dijumpai.")
 
         return
 
-    print("✅ BOT_TOKEN berjaya dibaca!")
-    print("🤖 Bot sedang dimulakan...")
+    print("✅ BOT_TOKEN berjaya dibaca.")
+    print("🚀 Starting bot...")
 
-    try:
+    application = (
+        Application
+        .builder()
+        .token(TOKEN)
+        .build()
+    )
 
-        application = (
-            Application
-            .builder()
-            .token(TOKEN)
-            .build()
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
         )
+    )
 
-        application.add_handler(
-            CommandHandler("start", start)
+    application.add_handler(
+        CommandHandler(
+            "price",
+            price
         )
+    )
 
-        application.add_handler(
-            CommandHandler("price", price)
+    application.add_handler(
+        CommandHandler(
+            "signal",
+            signal
         )
+    )
 
-        application.add_handler(
-            CommandHandler("signal", signal)
+    application.add_handler(
+        CommandHandler(
+            "news",
+            news
         )
+    )
 
-        application.add_handler(
-            CommandHandler("news", news)
-        )
+    application.add_error_handler(
+        error_handler
+    )
 
-        application.add_error_handler(
-            error_handler
-        )
+    print("📡 Telegram polling aktif.")
+    print("======================================")
 
-        print("🚀 Bot sedang berjalan!")
-        print("📡 Telegram polling aktif!")
-        print("==========================================")
-
-        application.run_polling(
-            drop_pending_updates=True
-        )
-
-    except Exception as e:
-
-        print("")
-        print("❌ BOT ERROR")
-        print(str(e))
-        print("")
-
-        logger.exception(
-            "Fatal bot error"
-        )
+    application.run_polling(
+        drop_pending_updates=True
+    )
 
 
 # ============================================================
