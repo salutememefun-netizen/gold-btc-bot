@@ -1,375 +1,171 @@
-import os, logging, requests, json, asyncio, time
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+import os
+import logging
+import asyncio
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackContext
+from telegram.ext import Application, CommandHandler, ContextTypes
+from helpers import (
+    MY_TZ, last_signal_state, load_alert_state,
+    save_alert_state, get_stats
+)
+from analysis import analyze
+from datetime import datetime
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
-TWELVE_KEY = os.getenv("TWELVE_API_KEY", "")
-MY_TZ = ZoneInfo("Asia/Kuala_Lumpur")
-HISTORY_FILE = "/tmp/history.json"
-ALERT_STATE_FILE = "/tmp/alert_state.json"
-
-SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Linux; Android 13) Chrome/120"})
-
-# Global state untuk tracking signal sebelumnya
-last_signal_state = {}
-auto_polling_active = False
-polling_interval = 300  # 5 minit
+polling_interval = 300
+auto_chat_ids = set()
 
 
-def gold_market_open():
-    now = datetime.now(MY_TZ)
-    wd, mins = now.weekday(), now.hour * 60 + now.minute
-    if wd == 5: return False, "WEEKEND"
-    if wd == 6 and mins < 360: return False, "WEEKEND"
-    if 300 <= mins < 360: return False, "DAILY BREAK"
-    return True, "OPEN"
+def fmt(asset, d):
+    if not d:
+        return "Data tidak cukup untuk analisis."
+    if not d.get("market_open"):
+        return "Market TUTUP: " + d.get("market_reason", "")
 
+    name = "GOLD (XAU/USD)" if asset == "gold" else "BITCOIN (BTC/USD)"
+    direction = d["direction"]
+    price = d["price"]
+    score = d["score"]
+    confidence = d["confidence"]
 
-def get_session():
-    h = datetime.now(MY_TZ).hour
-    if 15 <= h < 24: return "NEW YORK"
-    if 8 <= h < 17: return "LONDON"
-    if 2 <= h < 11: return "TOKYO"
-    return "SYDNEY"
-
-
-def save_history(asset, direction, price, score):
-    try:
-        data = []
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE) as f:
-                data = json.load(f)
-        data.append({"time": datetime.now(MY_TZ).strftime("%d/%m %H:%M"),
-                     "asset": asset, "direction": direction,
-                     "price": price, "score": score})
-        data = data[-50:]
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        logger.warning("history error: %s", e)
-
-
-def load_alert_state():
-    global last_signal_state
-    try:
-        if os.path.exists(ALERT_STATE_FILE):
-            with open(ALERT_STATE_FILE) as f:
-                last_signal_state = json.load(f)
-    except Exception as e:
-        logger.warning("Failed to load alert state: %s", e)
-        last_signal_state = {}
-
-
-def save_alert_state():
-    try:
-        with open(ALERT_STATE_FILE, "w") as f:
-            json.dump(last_signal_state, f)
-    except Exception as e:
-        logger.warning("Failed to save alert state: %s", e)
-
-
-def binance_candles(symbol, interval="15m", limit=200):
-    try:
-        r = SESSION.get("https://api.binance.com/api/v3/klines",
-                        params={"symbol": symbol, "interval": interval, "limit": limit},
-                        timeout=15)
-        if r.status_code != 200:
-            return []
-        out = []
-        for x in r.json():
-            try:
-                out.append({"time": x[0], "open": float(x[1]), "high": float(x[2]),
-                            "low": float(x[3]), "close": float(x[4]), "volume": float(x[7])})
-            except Exception:
-                continue
-        return out
-    except Exception as e:
-        logger.warning("binance %s: %s", symbol, e)
-        return []
-
-
-def coingecko_ohlc(coin, days=90):
-    try:
-        r = SESSION.get("https://api.coingecko.com/api/v3/coins/" + coin + "/ohlc",
-                        params={"vs_currency": "usd", "days": days}, timeout=15)
-        if r.status_code != 200:
-            return []
-        out = []
-        for x in r.json():
-            try:
-                out.append({"time": x[0], "open": float(x[1]), "high": float(x[2]),
-                            "low": float(x[3]), "close": float(x[4]), "volume": 0})
-            except Exception:
-                continue
-        return out
-    except Exception as e:
-        logger.warning("coingecko %s: %s", coin, e)
-        return []
-
-
-def twelvedata_candles(symbol, interval="15min", size=200):
-    if not TWELVE_KEY:
-        return []
-    try:
-        r = SESSION.get("https://api.twelvedata.com/time_series",
-                        params={"symbol": symbol, "interval": interval,
-                                "outputsize": size, "apikey": TWELVE_KEY},
-                        timeout=20)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        if data.get("status") == "error":
-            return []
-        out = []
-        for x in reversed(data.get("values", [])):
-            try:
-                out.append({"time": x.get("datetime"), "open": float(x.get("open", 0)),
-                            "high": float(x.get("high", 0)), "low": float(x.get("low", 0)),
-                            "close": float(x.get("close", 0)), "volume": 0})
-            except Exception:
-                continue
-        return out
-    except Exception as e:
-        logger.warning("twelvedata %s: %s", symbol, e)
-        return []
-
-
-def get_gold_price():
-    for url, fn in [
-        ("https://api.metals.live/v1/spot/gold", lambda r: r.json().get("price")),
-        ("https://api.gold-api.com/price/XAU", lambda r: r.json().get("price")),
-    ]:
-        try:
-            r = SESSION.get(url, timeout=10)
-            if r.status_code == 200:
-                p = fn(r)
-                if p and float(p) > 0:
-                    return float(p), url.split("/")[2]
-        except Exception:
-            pass
-    return None, None
-
-
-def gold_candles():
-    paxg = binance_candles("PAXGUSDT", "15m", 200)
-    if len(paxg) < 20:
-        paxg = binance_candles("PAXGUSDT", "1h", 200)
-    if len(paxg) < 20:
-        return [], None
-    real, _ = get_gold_price()
-    if not real:
-        return paxg, "PAXG"
-    ratio = real / paxg[-1]["close"]
-    out = []
-    for c in paxg:
-        out.append({"time": c["time"], "open": c["open"] * ratio,
-                    "high": c["high"] * ratio, "low": c["low"] * ratio,
-                    "close": c["close"] * ratio, "volume": c["volume"]})
-    return out, "XAUUSD-Scaled"
-
-
-def get_candles(asset, tf="15m", minimum=20):
-    if asset == "btc":
-        sources = [
-            lambda: (binance_candles("BTCUSDT", "15m", 200), "Binance-15m"),
-            lambda: (binance_candles("BTCUSDT", "1h", 200), "Binance-1h"),
-            lambda: (coingecko_ohlc("bitcoin", 90), "CoinGecko"),
-        ]
+    if direction == "BUY":
+        signal_line = "🟢 SIGNAL: BUY"
+    elif direction == "SELL":
+        signal_line = "🔴 SIGNAL: SELL"
     else:
-        if tf in ("1h", "4h"):
-            sources = [
-                lambda: (twelvedata_candles("XAU/USD", "1h", 200), "Twelve-1h"),
-                lambda: (binance_candles("PAXGUSDT", "1h", 200), "PAXG-1h"),
-                lambda: gold_candles(),
-            ]
-        else:
-            sources = [
-                lambda: (twelvedata_candles("XAU/USD", "15min", 200), "Twelve-15m"),
-                lambda: gold_candles(),
-                lambda: (coingecko_ohlc("pax-gold", 90), "CoinGecko-PAXG"),
-            ]
-    for fn in sources:
-        try:
-            result = fn()
-            candles, src = result if isinstance(result, tuple) else (result, "unknown")
-            if candles and len(candles) >= minimum:
-                return candles, src
-        except Exception as e:
-            logger.warning("candle source failed: %s", e)
-    return [], None
+        signal_line = "⏳ SIGNAL: TUNGGU"
+
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━",
+        "📊 " + name,
+        "━━━━━━━━━━━━━━━━━━━━",
+        signal_line,
+        "💰 Harga: " + str(round(price, 2)),
+        "🎯 Bias: " + d["bias"],
+        "📈 Score: " + str(score) + "/100",
+        "🔒 Confidence: " + str(confidence) + "%",
+        "🕐 Session: " + d.get("session", ""),
+        "📡 Source: " + str(d.get("source", "")),
+        "",
+    ]
+
+    if d.get("rsi") is not None:
+        lines.append("RSI: " + str(round(d["rsi"], 1)))
+    if d.get("adx") is not None:
+        lines.append("ADX: " + str(round(d["adx"], 1)))
+    if d.get("atr") is not None:
+        lines.append("ATR: " + str(round(d["atr"], 2)))
+    if d.get("divergence") and d["divergence"] != "NONE":
+        lines.append("DIV: " + d["divergence"])
+
+    lines.append("")
+    lines.append("📋 Sebab:")
+    for r in d.get("reasons", []):
+        lines.append("  • " + r)
+
+    if d.get("missing"):
+        lines.append("")
+        lines.append("⏳ Tunggu:")
+        for m in d["missing"]:
+            lines.append("  • " + m)
+
+    if direction in ("BUY", "SELL"):
+        lines.append("")
+        lines.append("🎯 Level:")
+        if d.get("sl") is not None:
+            lines.append("  SL : " + str(round(d["sl"], 2)))
+        if d.get("tp1") is not None:
+            lines.append("  TP1: " + str(round(d["tp1"], 2)) + " (RR " + str(d.get("rr1", "")) + ")")
+        if d.get("tp2") is not None:
+            lines.append("  TP2: " + str(round(d["tp2"], 2)) + " (RR " + str(d.get("rr2", "")) + ")")
+        if d.get("zone_low") is not None:
+            lines.append("  Zone: " + str(round(d["zone_low"], 2)) + " - " + str(round(d["zone_high"], 2)))
+
+    if d.get("news"):
+        lines.append("")
+        lines.append("📰 News USD minggu ini:")
+        for n in d["news"][:3]:
+            lines.append("  • " + n.get("title", ""))
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
 
 
-def get_live_price(asset):
-    if asset == "btc":
-        apis = [
-            ("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
-             lambda r: r.json().get("bitcoin", {}).get("usd")),
-            ("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
-             lambda r: float(r.json().get("price", 0))),
-        ]
-    else:
-        apis = [
-            ("https://api.metals.live/v1/spot/gold", lambda r: r.json().get("price")),
-            ("https://api.gold-api.com/price/XAU", lambda r: r.json().get("price")),
-        ]
-    for url, fn in apis:
-        try:
-            r = SESSION.get(url, timeout=10)
-            if r.status_code == 200:
-                p = fn(r)
-                if p and float(p) > 0:
-                    return float(p), url.split("/")[2]
-        except Exception:
-            pass
-    return None, None
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "👋 Selamat datang ke Signal Bot!\n\n"
+        "Gunakan arahan berikut:\n"
+        "/gold - Analisis XAU/USD\n"
+        "/btc - Analisis BTC/USD\n"
+        "/auto - Auto alert ON (5 minit)\n"
+        "/stop - Auto alert OFF\n"
+        "/stats - Statistik signal\n"
+        "/help - Bantuan"
+    )
+    await update.message.reply_text(msg)
 
 
-def get_news():
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "📖 Arahan Bot:\n\n"
+        "/gold - Signal analisis GOLD\n"
+        "/btc - Signal analisis BTC\n"
+        "/auto - Hidupkan auto alert\n"
+        "/stop - Matikan auto alert\n"
+        "/stats - Lihat rekod signal\n"
+        "/start - Mesej selamat datang"
+    )
+    await update.message.reply_text(msg)
+
+
+async def gold_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Menganalisis GOLD...")
     try:
-        r = SESSION.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=10)
-        if r.status_code != 200:
-            return []
-        out = []
-        for e in r.json():
-            if str(e.get("impact", "")).upper() == "HIGH" and str(e.get("country", "")).upper() in ("USD", "XAU"):
-                out.append({"title": e.get("title", ""), "date": e.get("date", "")})
-        return out[:5]
-    except Exception:
-        return []
+        d = analyze("gold")
+        await update.message.reply_text(fmt("gold", d))
+    except Exception as e:
+        logger.error("gold_cmd error: %s", e)
+        await update.message.reply_text("Ralat semasa analisis. Cuba lagi.")
 
 
-def check_news_risk(news):
-    now = datetime.now(MY_TZ)
-    for e in news:
-        try:
-            dt = datetime.fromisoformat(e["date"].replace("Z", "+00:00")).astimezone(MY_TZ)
-            diff = abs((dt - now).total_seconds() / 60)
-            if diff <= 30:
-                return True, "HIGH IMPACT NEWS dalam " + str(int(diff)) + " min: " + e["title"]
-        except Exception:
-            pass
-    return False, ""
+async def btc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Menganalisis BTC...")
+    try:
+        d = analyze("btc")
+        await update.message.reply_text(fmt("btc", d))
+    except Exception as e:
+        logger.error("btc_cmd error: %s", e)
+        await update.message.reply_text("Ralat semasa analisis. Cuba lagi.")
 
 
-def ema(v, n):
-    if len(v) < n:
-        return None
-    k = 2 / (n + 1)
-    x = sum(v[:n]) / n
-    for p in v[n:]:
-        x = (p - x) * k + x
-    return x
+async def auto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    auto_chat_ids.add(chat_id)
+    await update.message.reply_text(
+        "✅ Auto alert AKTIF!\n"
+        "Bot akan hantar signal setiap 5 minit jika ada perubahan.\n"
+        "Taip /stop untuk hentikan."
+    )
 
 
-def rsi_calc(v, n=14):
-    if len(v) < n + 1:
-        return None
-    g, l = [], []
-    for i in range(1, len(v)):
-        d = v[i] - v[i-1]
-        g.append(max(d, 0))
-        l.append(max(-d, 0))
-    ag, al = sum(g[:n])/n, sum(l[:n])/n
-    for i in range(n, len(g)):
-        ag = ((ag*(n-1))+g[i])/n
-        al = ((al*(n-1))+l[i])/n
-    if al == 0:
-        return 100.0
-    return 100 - 100/(1 + ag/al)
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    auto_chat_ids.discard(chat_id)
+    await update.message.reply_text("🛑 Auto alert DIMATIKAN.")
 
 
-def atr_calc(c, n=14):
-    if len(c) < n + 1:
-        return None
-    tr = []
-    for i in range(1, len(c)):
-        x, p = c[i], c[i-1]
-        tr.append(max(x["high"]-x["low"], abs(x["high"]-p["close"]), abs(x["low"]-p["close"])))
-    if len(tr) < n:
-        return None
-    a = sum(tr[:n])/n
-    for x in tr[n:]:
-        a = ((a*(n-1))+x)/n
-    return a
-
-
-def adx_calc(c, n=14):
-    if len(c) < n*2+1:
-        return None
-    tr, pdm, mdm = [], [], []
-    for i in range(1, len(c)):
-        x, p = c[i], c[i-1]
-        hd = x["high"] - p["high"]
-        ld = p["low"] - x["low"]
-        tr.append(max(x["high"]-x["low"], abs(x["high"]-p["close"]), abs(x["low"]-p["close"])))
-        pdm.append(hd if hd > ld and hd > 0 else 0)
-        mdm.append(ld if ld > hd and ld > 0 else 0)
-    ta, pa, ma = sum(tr[:n])/n, sum(pdm[:n])/n, sum(mdm[:n])/n
-    dx = []
-    for i in range(n, len(tr)):
-        ta = ((ta*(n-1))+tr[i])/n
-        pa = ((pa*(n-1))+pdm[i])/n
-        ma = ((ma*(n-1))+mdm[i])/n
-        if ta == 0:
-            continue
-        pdi, mdi = 100*pa/ta, 100*ma/ta
-        if pdi+mdi == 0:
-            continue
-        dx.append(100*abs(pdi-mdi)/(pdi+mdi))
-    return sum(dx[-n:])/n if len(dx) >= n else None
-
-
-def rsi_divergence(c, lb=10):
-    if len(c) < lb + 14:
-        return "NONE"
-    closes = [x["close"] for x in c]
-    rv = []
-    for i in range(len(closes)):
-        if i >= 14:
-            rv.append(rsi_calc(closes[max(0, i-28):i+1]))
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lines = ["📊 Statistik Signal\n"]
+    for asset in ("gold", "btc"):
+        s = get_stats(asset)
+        name = "GOLD" if asset == "gold" else "BTC"
+        if s:
+            lines.append(name + ":")
+            lines.append("  Total : " + str(s["total"]))
+            lines.append("  BUY   : " + str(s["buy"]))
+            lines.append("  SELL  : " + str(s["sell"]))
+            lines.append("  WAIT  : " + str(s["wait"]))
         else:
-            rv.append(None)
-    rr = [x for x in rv[-lb:] if x is not None]
-    if len(rr) < 2:
-        return "NONE"
-    pp = [x["close"] for x in c[-len(rr):]]
-    if pp[-1] < pp[0] and rr[-1] > rr[0]:
-        return "BULLISH DIV"
-    if pp[-1] > pp[0] and rr[-1] < rr[0]:
-        return "BEARISH DIV"
-    return "NONE"
-
-
-def get_swings(c, n=30):
-    if not c:
-        return None, None
-    x = c[-min(n, len(c)):]
-    return min(z["low"] for z in x), max(z["high"] for z in x)
-
-
-def structure(c):
-    if len(c) < 20:
-        return "NEUTRAL"
-    a, b = c[-20:-10], c[-10:]
-    if max(x["high"] for x in b) > max(x["high"] for x in a) and min(x["low"] for x in b) > min(x["low"] for x in a):
-        return "BULLISH"
-    if max(x["high"] for x in b) < max(x["high"] for x in a) and min(x["low"] for x in b) < min(x["low"] for x in a):
-        return "BEARISH"
-    return "NEUTRAL"
-
-
-def candle_conf(c):
-    if len(c) < 3:
-        return "NONE"
-    p, x = c[-2], c[-1]
-    xb = x["close"] > x["open"]
-    xa = x["close"] < x["open"]
-    if p["close"] < p["open"] and xb and x["open"] <= p["close"] and x["close"] >= p["open"]:
-        return "BULLISH ENGULFING"
-    if p["close"] > p["open"] and xa and x["open"]
+            lines.append(name + ": Tiada rekod")
