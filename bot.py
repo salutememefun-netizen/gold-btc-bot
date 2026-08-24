@@ -5,8 +5,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
-# GOLD & BTC SIGNAL BOT V7.2
-# DATA RELIABILITY + 15M FALLBACK
+# GOLD & BTC SIGNAL BOT V7.3
+# DATA RELIABILITY + MULTI-SOURCE PRICE + 15M FALLBACK
 # ============================================================
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -95,31 +95,45 @@ def get_candles(asset, interval, ranges=None, minimum=20):
     return [], None
 
 def get_live_price(asset):
-    for symbol in SYMBOLS.get(asset, []):
+    """Multi-source price fallback - V7.3"""
+    
+    if asset == "btc":
+        # BTC APIs
+        apis = [
+            ("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+             lambda r: r.json().get("bitcoin", {}).get("usd")),
+            ("https://api.coinbase.com/v2/exchange-rates?currency=BTC",
+             lambda r: float(r.json().get("data", {}).get("rates", {}).get("USD", 0))),
+        ]
+    else:
+        # Gold APIs
+        apis = [
+            ("https://api.metals.live/v1/spot/gold",
+             lambda r: r.json().get("price")),
+            ("https://api.gold-api.com/price/XAU",
+             lambda r: r.json().get("price")),
+        ]
+    
+    for url, parser in apis:
         try:
-            r = SESSION.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-                params={"interval": "1m", "range": "1d", "includePrePost": "true"},
-                timeout=15
-            )
-            if r.status_code != 200:
-                continue
-            result = r.json().get("chart", {}).get("result")
-            if not result:
-                continue
-            x = result[0]
-            p = x.get("meta", {}).get("regularMarketPrice")
-            if p is None:
-                q = x.get("indicators", {}).get("quote", [])
-                closes = q[0].get("close", []) if q else []
-                for v in reversed(closes):
-                    if v is not None:
-                        p = v
-                        break
-            if p is not None:
-                return float(p), symbol
+            r = SESSION.get(url, timeout=10)
+            if r.status_code == 200:
+                price = parser(r)
+                if price:
+                    source = url.split('/')[2]
+                    logger.info("%s price from %s: %s", asset, source, price)
+                    return float(price), source
         except Exception as e:
-            logger.warning("Price %s error: %s", symbol, e)
+            logger.warning("API %s error: %s", url, e)
+            continue
+    
+    # Fallback: Ambil dari Yahoo candles
+    candles, symbol = get_candles(asset, "1m", ["1d"], 5)
+    if candles:
+        logger.info("%s price fallback from Yahoo: %s", asset, candles[-1]["close"])
+        return candles[-1]["close"], symbol
+    
+    logger.error("%s price not available", asset)
     return None, None
 
 # ---------------- INDICATORS ----------------
@@ -268,11 +282,9 @@ def analyze_asset(asset):
     if not opened:
         return {"market_open": False, "market_reason": reason, "asset": asset}
 
-    # V7.2: progressively wider fallback ranges
     c15, s15 = get_candles(asset, "15m", ["5d", "1mo", "3mo"], 60)
     c1h, s1h = get_candles(asset, "1h", ["1mo", "3mo", "6mo"], 50)
 
-    # If 15M still unavailable, retry once with alternate symbol/source
     if len(c15) < 60:
         for sym in SYMBOLS.get(asset, []):
             c = yahoo_candles(sym, "15m", "1mo")
@@ -390,7 +402,7 @@ def format_signal(asset, r):
 
     name, emoji = ("GOLD (XAUUSD)","🥇") if asset=="gold" else ("BITCOIN (BTC)","₿")
     d, b = r["direction"], r["bias"]
-    msg = f"{emoji} *{name} SIGNAL V7.2*\n\n💰 Harga: `${r['price']:,.2f}`\n"
+    msg = f"{emoji} *{name} SIGNAL V7.3*\n\n💰 Harga: `${r['price']:,.2f}`\n"
     msg += "\n🟢 *SIGNAL: BUY*\n🚀 Entry trigger aktif\n" if d=="BUY" else \
            "\n🔴 *SIGNAL: SELL*\n🚀 Entry trigger aktif\n" if d=="SELL" else \
            "\n🟡 *SIGNAL: WAIT*\n⏳ Tunggu confirmation\n"
@@ -417,7 +429,7 @@ def format_signal(asset, r):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *GOLD & BTC SIGNAL BOT V7.2*\n\n"
+        "🤖 *GOLD & BTC SIGNAL BOT V7.3*\n\n"
         "/price - Harga Gold & BTC\n"
         "/signal gold - Signal Gold\n"
         "/signal btc - Signal Bitcoin\n"
@@ -426,12 +438,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💧 Liquidity | 🕯 Candle | 📐 BOS | 🔄 Retest\n"
         "🎯 Entry Zone / SL / TP\n"
         "🔄 Multi-range candle fallback\n"
+        "💰 Multi-source price API\n"
         "🚫 Tiada auto-trading",
         parse_mode="Markdown"
     )
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "📈 *HARGA SEMASA V7.2*\n\n"
+    text = "📈 *HARGA SEMASA V7.3*\n\n"
     op, reason = gold_market_status()
     if not op:
         text += f"🥇 *Gold XAUUSD*\n🔴 MARKET CLOSED\nStatus: `{reason}`\n\n"
@@ -448,7 +461,7 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asset = context.args[0].lower()
     if asset not in ("gold","btc"):
         await update.message.reply_text("❌ Asset tidak disokong.\n/signal gold\n/signal btc"); return
-    status = await update.message.reply_text("🧠 *SIGNAL V7.2*\n\n📡 Mengambil data...\n🔄 Multi-source fallback aktif...\n⏳ Sila tunggu...", parse_mode="Markdown")
+    status = await update.message.reply_text("🧠 *SIGNAL V7.3*\n\n📡 Mengambil data...\n🔄 Multi-source fallback aktif...\n⏳ Sila tunggu...", parse_mode="Markdown")
     try:
         await status.edit_text(format_signal(asset, analyze_asset(asset)), parse_mode="Markdown")
     except Exception as e:
@@ -457,7 +470,7 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📰 *NEWS MONITOR V7.2*\n\n"
+        "📰 *NEWS MONITOR V7.3*\n\n"
         "🥇 GOLD: USD Index, Federal Reserve, CPI, NFP, Interest Rate\n\n"
         "₿ BTC: ETF Flow, Funding Rate, BTC Dominance, US Macro Data\n\n"
         "⚠️ News engine belum live.",
@@ -469,7 +482,7 @@ async def error_handler(update, context):
 
 def main():
     print("==========================================")
-    print("🤖 GOLD & BTC SIGNAL BOT V7.2")
+    print("🤖 GOLD & BTC SIGNAL BOT V7.3")
     print("==========================================")
     if not TOKEN:
         print("❌ BOT_TOKEN TIDAK DIJUMPAI")
@@ -481,9 +494,10 @@ def main():
     app.add_handler(CommandHandler("signal", signal))
     app.add_handler(CommandHandler("news", news))
     app.add_error_handler(error_handler)
-    print("🚀 V7.2 BOT AKTIF!")
+    print("🚀 V7.3 BOT AKTIF!")
     print("🔄 15M fallback: 5d -> 1mo -> 3mo")
     print("🔄 1H fallback: 1mo -> 3mo -> 6mo")
+    print("💰 Price API: CoinGecko, Coinbase, Metals.live, Gold-API")
     print("🚫 No auto trading")
     app.run_polling(drop_pending_updates=True)
 
