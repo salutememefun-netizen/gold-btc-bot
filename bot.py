@@ -32,7 +32,7 @@ def btc_market_status():
     return True, "OPEN 24/7"
 
 # ============================================================
-# BINANCE - BTC & GOLD PROXY
+# BINANCE CANDLES
 # ============================================================
 
 def binance_candles(symbol, interval="15m", limit=200):
@@ -66,10 +66,10 @@ def binance_candles(symbol, interval="15m", limit=200):
         return []
 
 # ============================================================
-# COINGECKO - BTC & GOLD
+# COINGECKO OHLC
 # ============================================================
 
-def coingecko_candles(coin_id, days=90):
+def coingecko_ohlc(coin_id, days=90):
     url = "https://api.coingecko.com/api/v3/coins/" + coin_id + "/ohlc"
     try:
         r = SESSION.get(url, params={
@@ -77,11 +77,9 @@ def coingecko_candles(coin_id, days=90):
             "days": days
         }, timeout=15)
         if r.status_code != 200:
-            logger.warning("CoinGecko ohlc %s HTTP %s", coin_id, r.status_code)
             return []
-        data = r.json()
         candles = []
-        for item in data:
+        for item in r.json():
             try:
                 candles.append({
                     "time": item[0],
@@ -99,86 +97,64 @@ def coingecko_candles(coin_id, days=90):
         logger.warning("CoinGecko ohlc %s error: %s", coin_id, e)
         return []
 
-def coingecko_market_chart(coin_id, days=90):
-    url = "https://api.coingecko.com/api/v3/coins/" + coin_id + "/market_chart"
-    try:
-        r = SESSION.get(url, params={
-            "vs_currency": "usd",
-            "days": days
-        }, timeout=15)
-        if r.status_code != 200:
-            return []
-        prices = r.json().get("prices", [])
-        if not prices:
-            return []
-        candles = []
-        for i in range(1, len(prices)):
-            try:
-                prev_p = float(prices[i-1][1])
-                curr_p = float(prices[i][1])
-                hi = max(prev_p, curr_p)
-                lo = min(prev_p, curr_p)
-                candles.append({
-                    "time": prices[i][0],
-                    "open": prev_p,
-                    "high": hi,
-                    "low": lo,
-                    "close": curr_p,
-                    "volume": 0
-                })
-            except (IndexError, TypeError, ValueError):
-                continue
-        logger.info("CoinGecko chart %s: %d candles", coin_id, len(candles))
-        return candles
-    except Exception as e:
-        logger.warning("CoinGecko chart %s error: %s", coin_id, e)
-        return []
-
 # ============================================================
-# GOLD SPECIFIC SOURCES
+# GOLD REAL PRICE - AMBIL HARGA GOLD SEBENAR
+# GUNA SEBAGAI CANDLE BASE
 # ============================================================
 
-def gold_price_to_candles():
+def get_real_gold_price():
     apis = [
-        "https://api.metals.live/v1/spot/gold",
-        "https://api.gold-api.com/price/XAU",
+        ("https://api.metals.live/v1/spot/gold", lambda r: r.json().get("price")),
+        ("https://api.gold-api.com/price/XAU", lambda r: r.json().get("price")),
     ]
-    price = None
-    source = None
-    for url in apis:
+    for url, parser in apis:
         try:
             r = SESSION.get(url, timeout=10)
             if r.status_code == 200:
-                p = r.json().get("price")
+                p = parser(r)
                 if p and float(p) > 0:
-                    price = float(p)
-                    source = url.split("/")[2]
-                    break
-        except Exception:
-            continue
+                    logger.info("Real gold price: %.2f from %s", float(p), url)
+                    return float(p)
+        except Exception as e:
+            logger.warning("Gold price error %s: %s", url, e)
+    return None
 
-    if price is None:
-        return []
+def gold_candles_from_paxg_scaled():
+    """
+    Ambil candles dari PAXG Binance,
+    kemudian scale harga mengikut harga Gold sebenar.
+    PAXG = 1 troy oz Gold, jadi nisbah hampir 1:1.
+    Kita betulkan offset sahaja.
+    """
+    paxg = binance_candles("PAXGUSDT", "15m", 200)
+    if not paxg:
+        paxg = binance_candles("PAXGUSDT", "1h", 200)
+    if not paxg:
+        return [], None
 
-    # Buat synthetic candles dari satu harga untuk analisis asas
-    candles = []
-    base = price
-    for i in range(100):
-        offset = i * 0.0001 * base
-        candles.append({
-            "time": int(datetime.now().timestamp() * 1000) - (100 - i) * 900000,
-            "open": base - offset,
-            "high": base - offset + (base * 0.001),
-            "low": base - offset - (base * 0.001),
-            "close": base - offset * 0.5,
-            "volume": 0
+    real_price = get_real_gold_price()
+    if real_price is None:
+        return paxg, "PAXG-Binance"
+
+    # Kira offset antara PAXG dan harga Gold sebenar
+    paxg_last = paxg[-1]["close"]
+    offset = real_price - paxg_last
+
+    # Apply offset kepada semua candles
+    scaled = []
+    for c in paxg:
+        scaled.append({
+            "time": c["time"],
+            "open": c["open"] + offset,
+            "high": c["high"] + offset,
+            "low": c["low"] + offset,
+            "close": c["close"] + offset,
+            "volume": c["volume"]
         })
-    candles[-1]["close"] = price
-    candles[-1]["high"] = price * 1.001
-    candles[-1]["low"] = price * 0.999
 
-    logger.info("Gold synthetic candles from %s: %d", source, len(candles))
-    return candles
+    logger.info("Gold scaled candles: %d, last=%.2f (real=%.2f, paxg=%.2f, offset=%.2f)",
+                len(scaled), scaled[-1]["close"], real_price, paxg_last, offset)
+    return scaled, "XAUUSD-Scaled"
 
 # ============================================================
 # GET CANDLES
@@ -187,32 +163,32 @@ def gold_price_to_candles():
 def get_candles(asset, minimum=20):
     if asset == "btc":
         sources = [
-            ("Binance 15m", lambda: binance_candles("BTCUSDT", "15m", 200)),
-            ("Binance 1h", lambda: binance_candles("BTCUSDT", "1h", 200)),
-            ("CoinGecko OHLC", lambda: coingecko_candles("bitcoin", 90)),
-            ("CoinGecko Chart", lambda: coingecko_market_chart("bitcoin", 90)),
+            ("Binance 15m", lambda: (binance_candles("BTCUSDT", "15m", 200), "Binance-15m")),
+            ("Binance 1h", lambda: (binance_candles("BTCUSDT", "1h", 200), "Binance-1h")),
+            ("CoinGecko", lambda: (coingecko_ohlc("bitcoin", 90), "CoinGecko")),
         ]
     else:
         sources = [
-            ("Binance PAXG", lambda: binance_candles("PAXGUSDT", "15m", 200)),
-            ("Binance PAXG 1h", lambda: binance_candles("PAXGUSDT", "1h", 200)),
-            ("CoinGecko Gold", lambda: coingecko_candles("pax-gold", 90)),
-            ("CoinGecko Gold Chart", lambda: coingecko_market_chart("pax-gold", 90)),
-            ("Gold Synthetic", lambda: gold_price_to_candles()),
+            ("Gold Scaled", lambda: gold_candles_from_paxg_scaled()),
+            ("PAXG Raw", lambda: (binance_candles("PAXGUSDT", "15m", 200), "PAXG-Raw")),
+            ("CoinGecko Gold", lambda: (coingecko_ohlc("pax-gold", 90), "CoinGecko-Gold")),
         ]
 
     for source_name, source_func in sources:
         try:
-            candles = source_func()
+            result = source_func()
+            if isinstance(result, tuple):
+                candles, src = result
+            else:
+                candles, src = result, source_name
             if len(candles) >= minimum:
-                logger.info("%s from %s: %d candles OK", asset, source_name, len(candles))
-                return candles, source_name
+                logger.info("%s from %s: %d candles OK", asset, src, len(candles))
+                return candles, src
             logger.warning("%s from %s: only %d candles", asset, source_name, len(candles))
         except Exception as e:
             logger.warning("%s from %s failed: %s", asset, source_name, e)
             continue
 
-    logger.error("%s: semua source gagal", asset)
     return [], None
 
 # ============================================================
@@ -233,8 +209,6 @@ def get_live_price(asset):
              lambda r: r.json().get("price")),
             ("https://api.gold-api.com/price/XAU",
              lambda r: r.json().get("price")),
-            ("https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd",
-             lambda r: r.json().get("pax-gold", {}).get("usd")),
         ]
     for url, parser in apis:
         try:
@@ -498,11 +472,24 @@ def analyze_asset(asset):
         if retest == "BEARISH RETEST":
             score += 30
 
+    # --------------------------------------------------------
+    # LOGIK SIGNAL - LIQUIDITY OPTIONAL JIKA SCORE CUKUP
+    # --------------------------------------------------------
     direction = "WAIT"
-    if bias == "BUY" and score >= 70 and liq == "BULLISH SWEEP" and candle in ("BULLISH ENGULFING", "BULLISH CANDLE") and bos == "BULLISH BOS":
-        direction = "BUY"
-    elif bias == "SELL" and score >= 70 and liq == "BEARISH SWEEP" and candle in ("BEARISH ENGULFING", "BEARISH CANDLE") and bos == "BEARISH BOS":
-        direction = "SELL"
+
+    if bias == "BUY":
+        # Entry penuh - semua confirm termasuk sweep
+        if liq == "BULLISH SWEEP" and candle in ("BULLISH ENGULFING", "BULLISH CANDLE") and bos == "BULLISH BOS" and retest == "BULLISH RETEST":
+            direction = "BUY"
+        # Entry tanpa sweep jika score tinggi dan 3 lagi confirm
+        elif score >= 75 and candle in ("BULLISH ENGULFING", "BULLISH CANDLE") and bos == "BULLISH BOS" and retest == "BULLISH RETEST":
+            direction = "BUY"
+
+    elif bias == "SELL":
+        if liq == "BEARISH SWEEP" and candle in ("BEARISH ENGULFING", "BEARISH CANDLE") and bos == "BEARISH BOS" and retest == "BEARISH RETEST":
+            direction = "SELL"
+        elif score >= 75 and candle in ("BEARISH ENGULFING", "BEARISH CANDLE") and bos == "BEARISH BOS" and retest == "BEARISH RETEST":
+            direction = "SELL"
 
     if direction in ("BUY", "SELL"):
         confidence = min(95, int(55 + score * 0.40))
@@ -510,10 +497,10 @@ def analyze_asset(asset):
         confidence = min(59, int(40 + abs(bp-sp)*4 + score * 0.10))
 
     ref = bosprice if bosprice is not None else lprice
-    zl, zh = build_zone(price, av if av else price*0.005, ref)
+    safe_av = av if av else price * 0.005
+    zl, zh = build_zone(price, safe_av, ref)
 
     sl = tp1 = tp2 = None
-    safe_av = av if av else price * 0.005
     if direction == "BUY":
         protect = lprice if lprice is not None else (slw if slw else price * 0.99)
         sl = protect - safe_av * 0.30
@@ -528,26 +515,27 @@ def analyze_asset(asset):
         tp2 = price - risk * 2.5
 
     missing = []
-    if bias == "BUY":
-        if liq != "BULLISH SWEEP":
-            missing.append("Bullish liquidity sweep")
-        if candle not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
-            missing.append("Bullish candle confirmation")
-        if bos != "BULLISH BOS":
-            missing.append("Bullish BOS")
-        if retest != "BULLISH RETEST":
-            missing.append("Retest")
-    elif bias == "SELL":
-        if liq != "BEARISH SWEEP":
-            missing.append("Bearish liquidity sweep")
-        if candle not in ("BEARISH ENGULFING", "BEARISH CANDLE"):
-            missing.append("Bearish candle confirmation")
-        if bos != "BEARISH BOS":
-            missing.append("Bearish BOS")
-        if retest != "BEARISH RETEST":
-            missing.append("Retest")
-    else:
-        missing.append("Directional bias")
+    if direction == "WAIT":
+        if bias == "BUY":
+            if liq != "BULLISH SWEEP":
+                missing.append("Bullish liquidity sweep (optional)")
+            if candle not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
+                missing.append("Bullish candle confirmation")
+            if bos != "BULLISH BOS":
+                missing.append("Bullish BOS")
+            if retest != "BULLISH RETEST":
+                missing.append("Retest")
+        elif bias == "SELL":
+            if liq != "BEARISH SWEEP":
+                missing.append("Bearish liquidity sweep (optional)")
+            if candle not in ("BEARISH ENGULFING", "BEARISH CANDLE"):
+                missing.append("Bearish candle confirmation")
+            if bos != "BEARISH BOS":
+                missing.append("Bearish BOS")
+            if retest != "BEARISH RETEST":
+                missing.append("Retest")
+        else:
+            missing.append("Directional bias")
 
     reasons = []
     if e20 and e50:
@@ -608,7 +596,7 @@ def format_signal(asset, r):
     d = r["direction"]
     b = r["bias"]
 
-    msg = emoji + " *" + name + " SIGNAL V7.6*\n\n"
+    msg = emoji + " *" + name + " SIGNAL V7.7*\n\n"
     msg += "💰 Harga: `$" + fmt(r["price"]) + "`\n"
 
     if d == "BUY":
@@ -635,23 +623,23 @@ def format_signal(asset, r):
     elif d == "SELL":
         trig = "🔴 SELL TRIGGER ACTIVE"
     elif b == "BUY":
-        if r["liquidity"] != "BULLISH SWEEP":
-            trig = "🟡 WAIT FOR BULLISH SWEEP"
-        elif r["candle_confirmation"] not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
+        if r["candle_confirmation"] not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
             trig = "🟡 WAIT FOR BULLISH CANDLE"
         elif r["bos"] != "BULLISH BOS":
             trig = "🟡 WAIT FOR BULLISH BOS"
-        else:
+        elif r["retest"] != "BULLISH RETEST":
             trig = "🟡 WAIT FOR BULLISH RETEST"
+        else:
+            trig = "🟡 WAIT FOR BULLISH SWEEP"
     elif b == "SELL":
-        if r["liquidity"] != "BEARISH SWEEP":
-            trig = "🟡 WAIT FOR BEARISH SWEEP"
-        elif r["candle_confirmation"] not in ("BEARISH ENGULFING", "BEARISH CANDLE"):
+        if r["candle_confirmation"] not in ("BEARISH ENGULFING", "BEARISH CANDLE"):
             trig = "🟡 WAIT FOR BEARISH CANDLE"
         elif r["bos"] != "BEARISH BOS":
             trig = "🟡 WAIT FOR BEARISH BOS"
-        else:
+        elif r["retest"] != "BEARISH RETEST":
             trig = "🟡 WAIT FOR BEARISH RETEST"
+        else:
+            trig = "🟡 WAIT FOR BEARISH SWEEP"
     else:
         trig = "🟡 WAIT FOR DIRECTION"
 
@@ -669,7 +657,7 @@ def format_signal(asset, r):
     for x in r["reasons"]:
         msg += "• " + x + "\n"
 
-    if d == "WAIT":
+    if d == "WAIT" and r["missing"]:
         msg += "\n⏳ *TUNGGU*\n"
         for x in r["missing"]:
             msg += "• " + x + "\n"
@@ -686,7 +674,7 @@ def format_signal(asset, r):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *GOLD & BTC SIGNAL BOT V7.6*\n\n"
+        "🤖 *GOLD & BTC SIGNAL BOT V7.7*\n\n"
         "/price - Harga semasa\n"
         "/signal gold - Signal Gold\n"
         "/signal btc - Signal Bitcoin\n"
@@ -702,7 +690,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "📈 *HARGA SEMASA V7.6*\n\n"
+    text = "📈 *HARGA SEMASA V7.7*\n\n"
     op, reason = gold_market_status()
     if not op:
         text += "🥇 *Gold XAUUSD*\n🔴 CLOSED: `" + reason + "`\n\n"
@@ -728,7 +716,7 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Asset tidak disokong.\n/signal gold\n/signal btc")
         return
     status = await update.message.reply_text(
-        "🧠 *SIGNAL V7.6*\n\n📡 Mengambil data...\n⏳ Sila tunggu...",
+        "🧠 *SIGNAL V7.7*\n\n📡 Mengambil data...\n⏳ Sila tunggu...",
         parse_mode="Markdown"
     )
     try:
@@ -741,7 +729,7 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📰 *NEWS MONITOR V7.6*\n\n"
+        "📰 *NEWS MONITOR V7.7*\n\n"
         "🥇 GOLD: USD Index, Fed, CPI, NFP\n\n"
         "₿ BTC: ETF Flow, Funding Rate, Dominance\n\n"
         "⚠️ News engine belum live.",
@@ -752,7 +740,7 @@ async def error_handler(update, context):
     logger.error("Telegram error:", exc_info=context.error)
 
 def main():
-    print("BOT V7.6 STARTING")
+    print("BOT V7.7 STARTING")
     if not TOKEN:
         print("BOT_TOKEN NOT FOUND - Set di Railway Variables")
         return
@@ -762,7 +750,7 @@ def main():
     app.add_handler(CommandHandler("signal", signal))
     app.add_handler(CommandHandler("news", news))
     app.add_error_handler(error_handler)
-    print("BOT V7.6 RUNNING")
+    print("BOT V7.7 RUNNING")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
