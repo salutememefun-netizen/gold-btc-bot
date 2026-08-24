@@ -3,7 +3,6 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
-from scheduler import setup_scheduler, add_subscriber, remove_subscriber
 from helpers import analyze_gold_btc, get_btc_price, get_gold_price, generate_smart_signal
 
 # Load environment variables
@@ -31,45 +30,21 @@ def get_main_menu():
         ],
         [
             InlineKeyboardButton("🔄 Refresh Harga", callback_data='refresh')
-        ],
-        [
-            InlineKeyboardButton("🔔 Subscribe Auto-Alert", callback_data='sub_alert'),
-            InlineKeyboardButton("🔕 Unsubscribe Alert", callback_data='unsub_alert')
         ]
+        # Butang Subscribe dialihkan ke versi nanti bila scheduler sudah stabil
     ]
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome = (
         "🤖 *Bot Signal PRO: Smart Zones*\n\n"
-        "Analisis pintar dengan zon entry adaptif, RSI, & EMA.\n\n"
-        "Perintah:\n"
-        "/subscribe - Terima alert automatik setiap 1 jam\n"
-        "/unsubscribe - Hentikan alert\n\n"
-        "Pilih menu di bawah:"
+        "Analisis pintar dengan RSI, EMA, & Smart Zones.\n\n"
+        "Pilih menu di bawah untuk lihat signal:"
     )
     await update.message.reply_text(welcome, parse_mode='Markdown', reply_markup=get_main_menu())
 
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Pilih signal yang diingini:", reply_markup=get_main_menu())
-
-async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    add_subscriber(chat_id)
-    await update.message.reply_text(
-        "✅ *Berjaya Disubscribe!*\n"
-        "Anda akan menerima laporan pasaran automatik setiap 1 jam.",
-        parse_mode='Markdown'
-    )
-
-async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    remove_subscriber(chat_id)
-    await update.message.reply_text(
-        "❌ *Berjaya Dihentikan!*\n"
-        "Anda tidak akan menerima alert automatik lagi.",
-        parse_mode='Markdown'
-    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -101,24 +76,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(msg, parse_mode='Markdown')
         await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=get_main_menu())
 
-    elif query.data == 'sub_alert':
-        chat_id = query.message.chat_id
-        add_subscriber(chat_id)
-        await query.edit_message_text(
-            "✅ *Disubscribe!*\nAnda akan terima alert setiap 1 jam.",
-            parse_mode='Markdown'
-        )
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
-    elif query.data == 'unsub_alert':
-        chat_id = query.message.chat_id
-        remove_subscriber(chat_id)
-        await query.edit_message_text(
-            "❌ *Unsubscribe!*\nAlert telah dihentikan.",
-            parse_mode='Markdown'
-        )
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
 def main():
     logging.info("Bot Signal PRO sedang berjalan...")
     application = Application.builder().token(TOKEN).build()
@@ -126,13 +83,10 @@ def main():
     # Daftar handler
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analyze", analyze_command))
-    application.add_handler(CommandHandler("subscribe", subscribe_command))
-    application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    # Mula Scheduler (Auto-Alert)
-    setup_scheduler(application)
-
+    # Tiada scheduler di sini untuk mengelakkan ralat weak reference
+    logging.info("Bot siap mendengar arahan.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
