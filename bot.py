@@ -1,13 +1,22 @@
-import os, logging, requests, json
+import os, logging, requests, json, asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+TOKEN = os.getenv("BOT_TOKEN")
+TWELVE_KEY = os.getenv("TWELVE_API_KEY", "")
 MY_TZ = ZoneInfo("Asia/Kuala_Lumpur")
 HISTORY_FILE = "/tmp/history.json"
+
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Linux; Android 13) Chrome/120"})
-TWELVE_KEY = os.getenv("TWELVE_API_KEY", "")
+
+auto_chats = set()
+last_signals = {}
 
 def gold_market_open():
     now = datetime.now(MY_TZ)
@@ -46,59 +55,11 @@ def binance_candles(symbol, interval="15m", limit=200):
     try:
         r = SESSION.get("https://api.binance.com/api/v3/klines", params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=15)
         if r.status_code != 200: return []
-        return [{"time": x[0], "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]), "volume": float(x[7])} for x in r.json()]
+        out = []
+        for x in r.json():
+            try: out.append({"time": x[0], "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]), "volume": float(x[7])})
+            except: pass
+        return out
     except Exception as e: logger.warning("binance %s: %s", symbol, e); return []
 
-def coingecko_ohlc(coin, days=90):
-    try:
-        r = SESSION.get(f"https://api.coingecko.com/api/v3/coins/{coin}/ohlc", params={"vs_currency": "usd", "days": days}, timeout=15)
-        if r.status_code != 200: return []
-        return [{"time": x[0], "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]), "volume": 0} for x in r.json()]
-    except Exception as e: logger.warning("coingecko %s: %s", coin, e); return []
-
-def twelvedata_candles(symbol, interval="15min", size=200):
-    if not TWELVE_KEY: return []
-    try:
-        r = SESSION.get("https://api.twelvedata.com/time_series", params={"symbol": symbol, "interval": interval, "outputsize": size, "apikey": TWELVE_KEY}, timeout=20)
-        if r.status_code != 200 or r.json().get("status") == "error": return []
-        return [{"time": x.get("datetime"), "open": float(x.get("open", 0)), "high": float(x.get("high", 0)), "low": float(x.get("low", 0)), "close": float(x.get("close", 0)), "volume": 0} for x in reversed(r.json().get("values", []))]
-    except Exception as e: logger.warning("twelvedata %s: %s", symbol, e); return []
-
-def get_gold_price():
-    for url, fn in [("https://api.metals.live/v1/spot/gold", lambda r: r.json().get("price")), ("https://api.gold-api.com/price/XAU", lambda r: r.json().get("price"))]:
-        try:
-            r = SESSION.get(url, timeout=10)
-            if r.status_code == 200:
-                p = fn(r)
-                if p and float(p) > 0: return float(p), url.split("/")[2]
-        except Exception: pass
-    return None, None
-
-def gold_candles():
-    paxg = binance_candles("PAXGUSDT", "15m", 200)
-    if len(paxg) < 20: paxg = binance_candles("PAXGUSDT", "1h", 200)
-    if len(paxg) < 20: return [], None
-    real, _ = get_gold_price()
-    if not real: return paxg, "PAXG"
-    ratio = real / paxg[-1]["close"]
-    return [{"time": c["time"], "open": c["open"] * ratio, "high": c["high"] * ratio, "low": c["low"] * ratio, "close": c["close"] * ratio, "volume": c["volume"]} for c in paxg], "XAUUSD-Scaled"
-
-def get_candles(asset, tf="15m", minimum=20):
-    if asset == "btc":
-        sources = [lambda: (binance_candles("BTCUSDT", "15m", 200), "Binance-15m"), lambda: (binance_candles("BTCUSDT", "1h", 200), "Binance-1h"), lambda: (coingecko_ohlc("bitcoin", 90), "CoinGecko")]
-    else:
-        if tf in ("1h", "4h"):
-            sources = [lambda: (twelvedata_candles("XAU/USD", "1h", 200), "Twelve-1h"), lambda: (binance_candles("PAXGUSDT", "1h", 200), "PAXG-1h"), lambda: gold_candles()]
-        else:
-            sources = [lambda: (twelvedata_candles("XAU/USD", "15min", 200), "Twelve-15m"), lambda: gold_candles(), lambda: (coingecko_ohlc("pax-gold", 90), "CoinGecko-PAXG")]
-    for fn in sources:
-        try:
-            result = fn()
-            candles, src = result if isinstance(result, tuple) else (result, "unknown")
-            if candles and len(candles) >= minimum: return candles, src
-        except Exception as e: logger.warning("candle source failed: %s", e)
-    return [], None
-
-def get_live_price(asset):
-    apis = [
-        ("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", lambda r: r
+def coinge
