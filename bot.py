@@ -61,7 +61,88 @@ def btc_market_status():
 
 
 # ----------------------------------------------------------------------
-#  Yahoo data helpers
+#  Live Price - Gold (gold-api.com - FREE, no key needed)
+# ----------------------------------------------------------------------
+def get_gold_price_goldapi():
+    """Ambil harga Gold dari gold-api.com (percuma, tiada API key)"""
+    try:
+        r = SESSION.get(
+            "https://gold-api.com/price/XAU",
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            price = data.get("price")
+            if price:
+                return float(price), "gold-api.com"
+    except Exception as exc:
+        logger.warning(f"gold-api.com error: {exc}")
+    return None, None
+
+
+# ----------------------------------------------------------------------
+#  Live Price - BTC (Binance - FREE, no key needed)
+# ----------------------------------------------------------------------
+def get_btc_price_binance():
+    """Ambil harga BTC dari Binance API (percuma, tiada API key)"""
+    try:
+        r = SESSION.get(
+            "https://api.binance.com/api/v3/ticker/price",
+            params={"symbol": "BTCUSDT"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            price = data.get("price")
+            if price:
+                return float(price), "Binance"
+    except Exception as exc:
+        logger.warning(f"Binance price error: {exc}")
+    return None, None
+
+
+# ----------------------------------------------------------------------
+#  BTC Candles - Binance
+# ----------------------------------------------------------------------
+def get_btc_candles_binance(interval="15m", limit=100):
+    """
+    Ambil candle BTC dari Binance.
+    interval: 1m, 3m, 5m, 15m, 30m, 1h, 4h, 1d
+    """
+    try:
+        r = SESSION.get(
+            "https://api.binance.com/api/v3/klines",
+            params={
+                "symbol": "BTCUSDT",
+                "interval": interval,
+                "limit": limit,
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            logger.warning(f"Binance candles HTTP {r.status_code}")
+            return []
+        raw = r.json()
+        candles = []
+        for k in raw:
+            try:
+                candles.append({
+                    "time":  int(k[0]) // 1000,
+                    "open":  float(k[1]),
+                    "high":  float(k[2]),
+                    "low":   float(k[3]),
+                    "close": float(k[4]),
+                })
+            except (IndexError, ValueError):
+                continue
+        return candles
+    except Exception as exc:
+        logger.warning(f"Binance candles error: {exc}")
+        return []
+
+
+# ----------------------------------------------------------------------
+#  Gold Candles - Yahoo Finance (fallback ke Binance XAUUSDT jika gagal)
 # ----------------------------------------------------------------------
 def yahoo_candles(symbol, interval="15m", range_value="5d"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -100,15 +181,13 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
                 vals = (o[i], h[i], l[i], c[i])
                 if any(v is None for v in vals):
                     continue
-                out.append(
-                    {
-                        "time": t,
-                        "open": float(o[i]),
-                        "high": float(h[i]),
-                        "low": float(l[i]),
-                        "close": float(c[i]),
-                    }
-                )
+                out.append({
+                    "time":  t,
+                    "open":  float(o[i]),
+                    "high":  float(h[i]),
+                    "low":   float(l[i]),
+                    "close": float(c[i]),
+                })
             except (IndexError, TypeError, ValueError):
                 continue
         return out
@@ -117,115 +196,106 @@ def yahoo_candles(symbol, interval="15m", range_value="5d"):
         return []
 
 
-def get_candles(asset, interval, ranges=None, minimum=20):
-    if ranges is None:
+def get_gold_candles_binance(interval="15m", limit=100):
+    """Fallback: ambil candle XAUUSDT dari Binance"""
+    try:
+        r = SESSION.get(
+            "https://api.binance.com/api/v3/klines",
+            params={
+                "symbol": "XAUUSDT",
+                "interval": interval,
+                "limit": limit,
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            logger.warning(f"Binance Gold candles HTTP {r.status_code}")
+            return []
+        raw = r.json()
+        candles = []
+        for k in raw:
+            try:
+                candles.append({
+                    "time":  int(k[0]) // 1000,
+                    "open":  float(k[1]),
+                    "high":  float(k[2]),
+                    "low":   float(k[3]),
+                    "close": float(k[4]),
+                })
+            except (IndexError, ValueError):
+                continue
+        return candles
+    except Exception as exc:
+        logger.warning(f"Binance Gold candles error: {exc}")
+        return []
+
+
+def get_candles(asset, interval="15m", minimum=20):
+    """Ambil candle - Cuba Yahoo dulu, fallback ke Binance"""
+    if asset == "btc":
+        candles = get_btc_candles_binance(interval=interval, limit=100)
+        if len(candles) >= minimum:
+            logger.info("BTC candles dari Binance: %d", len(candles))
+            return candles, "Binance"
+        return [], None
+
+    if asset == "gold":
+        # Cuba Yahoo Finance dulu
         ranges = ["5d", "1mo", "3mo"]
-    for symbol in SYMBOLS.get(asset, []):
-        for rv in ranges:
-            candles = yahoo_candles(symbol, interval, rv)
-            if len(candles) >= minimum:
-                logger.info(
-                    "%s %s = %d candles [%s/%s]",
-                    asset, interval, len(candles), symbol, rv,
-                )
-                return candles, symbol
-            logger.warning(
-                "%s %s insufficient: %d [%s/%s]",
-                asset, interval, len(candles), symbol, rv,
-            )
+        for symbol in SYMBOLS.get("gold", []):
+            for rv in ranges:
+                candles = yahoo_candles(symbol, interval, rv)
+                if len(candles) >= minimum:
+                    logger.info("Gold candles dari Yahoo [%s/%s]: %d", symbol, rv, len(candles))
+                    return candles, symbol
+        # Fallback ke Binance XAUUSDT
+        logger.warning("Yahoo gagal, cuba Binance XAUUSDT...")
+        candles = get_gold_candles_binance(interval=interval, limit=100)
+        if len(candles) >= minimum:
+            logger.info("Gold candles dari Binance XAUUSDT: %d", len(candles))
+            return candles, "Binance XAUUSDT"
+        return [], None
+
     return [], None
 
 
+# ----------------------------------------------------------------------
+#  Live Price (main function)
+# ----------------------------------------------------------------------
 def get_live_price(asset):
     """
-    Return (price, source_symbol). Tries multiple sources:
-    1. Yahoo chart API
-    2. Yahoo quote API
-    3. Coingecko (BTC only)
-    4. Alpha Vantage (Gold only)
+    Return (price, source_symbol). Cuba pelbagai sumber:
+    Gold: gold-api.com → Yahoo chart → Yahoo quote → Alpha Vantage
+    BTC:  Binance → Coingecko → Yahoo
     """
     session = SESSION
 
-    # 1️⃣ Yahoo chart API
-    for symbol in SYMBOLS.get(asset, []):
-        try:
-            r = session.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-                params={
-                    "interval": "1m",
-                    "range": "1d",
-                    "includePrePost": "true",
-                },
-                timeout=15,
-            )
-            if r.status_code != 200:
-                logger.debug(f"Yahoo chart {symbol} returned {r.status_code}")
-                continue
-
-            data = r.json()
-            result = data.get("chart", {}).get("result")
-            if not result:
-                logger.debug(f"No chart result for {symbol}")
-                continue
-
-            meta = result[0].get("meta", {})
-            price = meta.get("regularMarketPrice")
-            if price is None:
-                quotes = result[0].get("indicators", {}).get("quote", [])
-                closes = quotes[0].get("close", []) if quotes else []
-                for v in reversed(closes):
-                    if v is not None:
-                        price = v
-                        break
-
-            if price is not None:
-                return float(price), symbol
-        except Exception as exc:
-            logger.warning(f"Yahoo chart error for {symbol}: {exc}")
-
-    # 2️⃣ Yahoo quote API
-    for symbol in SYMBOLS.get(asset, []):
-        try:
-            r = session.get(
-                "https://query1.finance.yahoo.com/v7/finance/quote",
-                params={"symbols": symbol},
-                timeout=10,
-            )
-            if r.status_code != 200:
-                logger.debug(f"Yahoo quote {symbol} returned {r.status_code}")
-                continue
-
-            data = r.json()
-            result = data.get("quoteResponse", {}).get("result", [])
-            if not result:
-                logger.debug(f"No quote result for {symbol}")
-                continue
-
-            quote = result[0]
-            price = quote.get("regularMarketPrice")
-            if price is not None:
-                return float(price), symbol
-        except Exception as exc:
-            logger.warning(f"Yahoo quote error for {symbol}: {exc}")
-
-    # 3️⃣ Coingecko for BTC
-    if asset == "btc":
-        try:
-            r = session.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "bitcoin", "vs_currencies": "usd"},
-                timeout=10,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                price = data.get("bitcoin", {}).get("usd")
-                if price is not None:
-                    return float(price), "Coingecko"
-        except Exception as exc:
-            logger.warning(f"Coingecko error: {exc}")
-
-    # 4️⃣ Alpha Vantage for Gold
     if asset == "gold":
+        # 1️⃣ gold-api.com (paling stabil untuk Gold)
+        price, src = get_gold_price_goldapi()
+        if price:
+            return price, src
+
+        # 2️⃣ Yahoo chart API
+        for symbol in SYMBOLS.get("gold", []):
+            try:
+                r = session.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                    params={"interval": "1m", "range": "1d", "includePrePost": "true"},
+                    timeout=15,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    result = data.get("chart", {}).get("result")
+                    if result:
+                        meta = result[0].get("meta", {})
+                        price = meta.get("regularMarketPrice")
+                        if price:
+                            return float(price), symbol
+            except Exception as exc:
+                logger.warning(f"Yahoo chart gold error: {exc}")
+
+        # 3️⃣ Alpha Vantage
         try:
             r = session.get(
                 "https://www.alphavantage.co/query",
@@ -245,11 +315,55 @@ def get_live_price(asset):
         except Exception as exc:
             logger.warning(f"AlphaVantage error: {exc}")
 
+        return None, None
+
+    if asset == "btc":
+        # 1️⃣ Binance (paling stabil untuk BTC)
+        price, src = get_btc_price_binance()
+        if price:
+            return price, src
+
+        # 2️⃣ Coingecko
+        try:
+            r = session.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "bitcoin", "vs_currencies": "usd"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                price = data.get("bitcoin", {}).get("usd")
+                if price:
+                    return float(price), "Coingecko"
+        except Exception as exc:
+            logger.warning(f"Coingecko error: {exc}")
+
+        # 3️⃣ Yahoo
+        for symbol in SYMBOLS.get("btc", []):
+            try:
+                r = session.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                    params={"interval": "1m", "range": "1d", "includePrePost": "true"},
+                    timeout=15,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    result = data.get("chart", {}).get("result")
+                    if result:
+                        meta = result[0].get("meta", {})
+                        price = meta.get("regularMarketPrice")
+                        if price:
+                            return float(price), symbol
+            except Exception as exc:
+                logger.warning(f"Yahoo BTC error: {exc}")
+
+        return None, None
+
     return None, None
 
 
 # ----------------------------------------------------------------------
-#  Technical Analysis Helpers
+#  Technical Analysis
 # ----------------------------------------------------------------------
 def compute_rsi(closes, period=14):
     if len(closes) < period + 1:
@@ -283,26 +397,34 @@ def compute_ema(closes, period):
 def compute_macd(closes):
     if len(closes) < 26:
         return None, None, None
-    ema12 = compute_ema(closes, 12)
-    ema26 = compute_ema(closes, 26)
-    if ema12 is None or ema26 is None:
-        return None, None, None
-    macd_line = round(ema12 - ema26, 4)
-    # Signal line: EMA9 of MACD values
-    macd_values = []
-    k26 = 2 / 27
     k12 = 2 / 13
-    ema12_r = sum(closes[:12]) / 12
-    ema26_r = sum(closes[:26]) / 26
+    k26 = 2 / 27
+    k9  = 2 / 10
+    ema12 = sum(closes[:12]) / 12
+    ema26 = sum(closes[:26]) / 26
     for price in closes[12:]:
-        ema12_r = price * k12 + ema12_r * (1 - k12)
+        ema12 = price * k12 + ema12 * (1 - k12)
     for price in closes[26:]:
-        ema26_r = price * k26 + ema26_r * (1 - k26)
-        macd_values.append(ema12_r - ema26_r)
-    if len(macd_values) < 9:
+        ema26 = price * k26 + ema26 * (1 - k26)
+    macd_line = round(ema12 - ema26, 4)
+
+    # Kira signal line (EMA9 of MACD values)
+    e12 = sum(closes[:12]) / 12
+    e26 = sum(closes[:26]) / 26
+    macd_vals = []
+    for price in closes[26:]:
+        e12 = price * k12 + e12 * (1 - k12)
+        e26 = price * k26 + e26 * (1 - k26)
+        macd_vals.append(e12 - e26)
+
+    if len(macd_vals) < 9:
         return macd_line, None, None
-    signal = compute_ema(macd_values, 9)
-    histogram = round(macd_line - signal, 4) if signal else None
+
+    signal = sum(macd_vals[:9]) / 9
+    for v in macd_vals[9:]:
+        signal = v * k9 + signal * (1 - k9)
+    signal = round(signal, 4)
+    histogram = round(macd_line - signal, 4)
     return macd_line, signal, histogram
 
 
@@ -316,94 +438,72 @@ def compute_bollinger(closes, period=20):
 
 
 def compute_stochastic(candles, k_period=14, d_period=3):
-    if len(candles) < k_period:
+    if len(candles) < k_period + d_period:
         return None, None
-    recent = candles[-k_period:]
-    low_min = min(c["low"] for c in recent)
-    high_max = max(c["high"] for c in recent)
-    if high_max == low_min:
-        return None, None
-    k = round(((candles[-1]["close"] - low_min) / (high_max - low_min)) * 100, 2)
     k_values = []
     for j in range(d_period):
-        idx = -(d_period - j)
-        seg = candles[idx - k_period: idx] if idx != 0 else candles[-k_period:]
+        seg = candles[-(k_period + d_period - j): -(d_period - j) if (d_period - j) > 0 else len(candles)]
         if len(seg) < k_period:
             continue
         lo = min(c["low"] for c in seg)
         hi = max(c["high"] for c in seg)
         if hi == lo:
             continue
-        k_values.append(((candles[idx - 1]["close"] - lo) / (hi - lo)) * 100)
-    d = round(sum(k_values) / len(k_values), 2) if k_values else None
+        k_values.append(((seg[-1]["close"] - lo) / (hi - lo)) * 100)
+    if not k_values:
+        return None, None
+    recent = candles[-k_period:]
+    lo = min(c["low"] for c in recent)
+    hi = max(c["high"] for c in recent)
+    if hi == lo:
+        return None, None
+    k = round(((candles[-1]["close"] - lo) / (hi - lo)) * 100, 2)
+    d = round(sum(k_values) / len(k_values), 2)
     return k, d
 
 
 def generate_signal(asset, candles):
     if len(candles) < 30:
         return "❓ Data tidak mencukupi"
-
     closes = [c["close"] for c in candles]
     rsi = compute_rsi(closes)
     ema20 = compute_ema(closes, 20)
     ema50 = compute_ema(closes, 50) if len(closes) >= 50 else None
     macd, signal_line, histogram = compute_macd(closes)
-    bb_low, bb_mid, bb_high = compute_bollinger(closes)
+    bb_low, _, bb_high = compute_bollinger(closes)
     stoch_k, stoch_d = compute_stochastic(candles)
-
     current = closes[-1]
     score = 0
 
     if rsi is not None:
-        if rsi < 35:
-            score += 2
-        elif rsi < 45:
-            score += 1
-        elif rsi > 65:
-            score -= 2
-        elif rsi > 55:
-            score -= 1
+        if rsi < 35:   score += 2
+        elif rsi < 45: score += 1
+        elif rsi > 65: score -= 2
+        elif rsi > 55: score -= 1
 
     if ema20 and ema50:
-        if current > ema20 > ema50:
-            score += 2
-        elif current < ema20 < ema50:
-            score -= 2
+        if current > ema20 > ema50:   score += 2
+        elif current < ema20 < ema50: score -= 2
 
     if macd and signal_line:
-        if macd > signal_line:
-            score += 1
-        else:
-            score -= 1
+        score += 1 if macd > signal_line else -1
 
     if histogram:
-        if histogram > 0:
-            score += 1
-        else:
-            score -= 1
+        score += 1 if histogram > 0 else -1
 
     if bb_low and bb_high:
-        if current < bb_low:
-            score += 2
-        elif current > bb_high:
-            score -= 2
+        if current < bb_low:   score += 2
+        elif current > bb_high: score -= 2
 
     if stoch_k and stoch_d:
-        if stoch_k < 20 and stoch_d < 20:
-            score += 1
-        elif stoch_k > 80 and stoch_d > 80:
-            score -= 1
+        if stoch_k < 20 and stoch_d < 20:   score += 1
+        elif stoch_k > 80 and stoch_d > 80: score -= 1
 
-    if score >= 4:
-        return "📈 STRONG BUY"
-    elif score >= 2:
-        return "🟢 BUY"
-    elif score <= -4:
-        return "📉 STRONG SELL"
-    elif score <= -2:
-        return "🔴 SELL"
-    else:
-        return "⏸️ NEUTRAL"
+    if score >= 4:   return "📈 STRONG BUY"
+    elif score >= 2: return "🟢 BUY"
+    elif score <= -4: return "📉 STRONG SELL"
+    elif score <= -2: return "🔴 SELL"
+    else:             return "⏸️ NEUTRAL"
 
 
 # ----------------------------------------------------------------------
@@ -459,7 +559,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /btc — Analisis teknikal Bitcoin\n"
         "  /signal — Signal ringkas Gold & BTC\n"
         "  /help — Bantuan\n\n"
-        "⚡ Data diambil dari Yahoo Finance, Coingecko & Alpha Vantage."
+        "⚡ Data dari gold\\-api\\.com, Binance & Coingecko\\."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -472,14 +572,14 @@ async def cmd_harga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Mengambil harga semasa...")
 
     gold_price, gold_src = get_live_price("gold")
-    btc_price, btc_src = get_live_price("btc")
+    btc_price, btc_src   = get_live_price("btc")
 
     now_str = datetime.now(MY_TZ).strftime("%d/%m/%Y %H:%M MYT")
     _, gold_status = gold_market_status()
-    _, btc_status = btc_market_status()
+    _, btc_status  = btc_market_status()
 
     gold_str = format_price("gold", gold_price) if gold_price else "❌ Harga tidak tersedia"
-    btc_str = format_price("btc", btc_price) if btc_price else "❌ Harga tidak tersedia"
+    btc_str  = format_price("btc", btc_price)  if btc_price  else "❌ Harga tidak tersedia"
 
     msg = (
         f"📈 *HARGA SEMASA*\n\n"
@@ -533,17 +633,15 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now_str = datetime.now(MY_TZ).strftime("%d/%m/%Y %H:%M MYT")
 
-    # Gold
     gold_price, gold_src = get_live_price("gold")
-    gold_candles, _ = get_candles("gold", "15m")
-    gold_sig = generate_signal("gold", gold_candles) if gold_candles else "❌ Tiada data"
-    gold_str = format_price("gold", gold_price) if gold_price else "❌ Tiada harga"
+    gold_candles, _      = get_candles("gold", "15m")
+    gold_sig  = generate_signal("gold", gold_candles) if gold_candles else "❌ Tiada data"
+    gold_str  = format_price("gold", gold_price) if gold_price else "❌ Tiada harga"
 
-    # BTC
     btc_price, btc_src = get_live_price("btc")
-    btc_candles, _ = get_candles("btc", "15m")
-    btc_sig = generate_signal("btc", btc_candles) if btc_candles else "❌ Tiada data"
-    btc_str = format_price("btc", btc_price) if btc_price else "❌ Tiada harga"
+    btc_candles, _     = get_candles("btc", "15m")
+    btc_sig  = generate_signal("btc", btc_candles) if btc_candles else "❌ Tiada data"
+    btc_str  = format_price("btc", btc_price) if btc_price else "❌ Tiada harga"
 
     msg = (
         f"🎯 *SIGNAL RINGKAS*\n\n"
@@ -581,11 +679,11 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("harga", cmd_harga))
-    app.add_handler(CommandHandler("gold", cmd_gold))
-    app.add_handler(CommandHandler("btc", cmd_btc))
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("help",   cmd_help))
+    app.add_handler(CommandHandler("harga",  cmd_harga))
+    app.add_handler(CommandHandler("gold",   cmd_gold))
+    app.add_handler(CommandHandler("btc",    cmd_btc))
     app.add_handler(CommandHandler("signal", cmd_signal))
 
     logger.info("Bot started. Polling...")
