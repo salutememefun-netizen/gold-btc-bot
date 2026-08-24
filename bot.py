@@ -18,6 +18,8 @@ SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Linux; Android 13) Chrome/12
 auto_chats = set()
 last_signals = {}
 
+# --- HELPER FUNCTIONS ---
+
 def gold_market_open():
     now = datetime.now(MY_TZ)
     wd, mins = now.weekday(), now.hour * 60 + now.minute
@@ -274,4 +276,4 @@ def liq_sweep(c, w=20):
     prev = c[-(w+1):-1]
     hi = max(z["high"] for z in prev)
     lo = min(z["low"] for z in prev)
-    if x["low"] < lo and x["close"] > lo: return "BULLISH SW
+    if x["low"] <
