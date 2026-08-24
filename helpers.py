@@ -16,21 +16,12 @@ logger = logging.getLogger(__name__)
 def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 200) -> Optional[List[Dict]]:
     """
     Ambil data candle dari Binance Public API.
-    symbol: "BTCUSDT" atau "XAUUSDT" (Jika XAU tidak ada, kita guna BTCUSDT sebagai proxy atau API lain)
-    Nota: Binance tidak ada XAUUSDT secara langsung. Kita akan guna API XAUS untuk Gold jika perlu,
-    tapi untuk konsistensi indikator, kita akan cuba dapatkan data terbaik.
-    
-    Untuk Gold, kita akan guna API XAUS yang ada data OHLC (jika ada) atau simulasi jika tiada.
-    Untuk BTC, kita guna Binance.
+    symbol: "BTCUSDT" atau "XAUUSDT" (Jika XAU tidak ada, kita guna BTCUSDT sebagai proxy)
+    Untuk Gold, kita akan guna API XAUS jika perlu, tapi untuk konsistensi, kita fokus pada BTC.
     """
     
     # Mapping symbol untuk Binance
-    binance_symbol = "BTCUSDT" if symbol == "BTC" else "BTCUSDT" # Gold tidak ada di Binance spot, kita guna BTC untuk demo atau API lain
-    
-    # Jika Gold, kita cuba guna API XAUS history (tapi ia daily). 
-    # Untuk analisis teknikal 1H/4H, kita akan fokus pada BTC dulu, atau kita anggap user nak analisis BTC.
-    # Jika anda mahu Gold sebenar, kita perlukan API berbayar atau API lain yang ada OHLC.
-    # Di sini kita akan fokus pada BTC untuk ketepatan, dan bagi Gold kita guna data harian sebagai proxy.
+    binance_symbol = "BTCUSDT" if symbol == "BTC" else "BTCUSDT"
     
     if symbol == "GOLD":
         # Guna XAUS API untuk data harian (limitasi)
@@ -39,7 +30,6 @@ def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 200) -> 
             resp = requests.get(url, timeout=10)
             data = resp.json()
             points = data.get("points", [])
-            # Ambil 200 titik terakhir
             candles = []
             for p in points[-limit:]:
                 candles.append({
@@ -47,7 +37,7 @@ def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 200) -> 
                     "high": p.get("h", p["c"]),
                     "low": p.get("l", p["c"]),
                     "close": p["c"],
-                    "volume": p.get("v", 0) # Volume mungkin tidak ada di XAUS
+                    "volume": p.get("v", 0)
                 })
             return candles
         except Exception as e:
@@ -105,7 +95,6 @@ def calculate_ema(prices: List[float], period: int) -> List[float]:
         ema_val = (prices[i] - ema[-1]) * multiplier + ema[-1]
         ema.append(ema_val)
     
-    # Pad awal dengan None
     return [None] * (period - 1) + ema
 
 def calculate_rsi(prices: List[float], period: int = 14) -> List[float]:
@@ -117,7 +106,6 @@ def calculate_rsi(prices: List[float], period: int = 14) -> List[float]:
         gains.append(max(diff, 0))
         losses.append(max(-diff, 0))
     
-    # Kira avg gain/loss
     avg_gains = []
     avg_losses = []
     
@@ -139,7 +127,7 @@ def calculate_rsi(prices: List[float], period: int = 14) -> List[float]:
             rsi_val = 100 - (100 / (1 + rs))
             rsi.append(rsi_val)
     
-    return [None] + rsi # Pad awal
+    return [None] + rsi
 
 def calculate_macd(prices: List[float]) -> Tuple[List[float], List[float], List[float]]:
     ema12 = calculate_ema(prices, 12)
@@ -155,16 +143,12 @@ def calculate_macd(prices: List[float]) -> Tuple[List[float], List[float], List[
             macd = ema12[i] - ema26[i]
             macd_line.append(macd)
     
-    # Signal line (EMA 9 dari MACD)
     valid_macd = [m for m in macd_line if m is not None]
     signal_ema = calculate_ema(valid_macd, 9)
     
-    # Align signal line dengan original list
-    # Ini agak kompleks, kita ringkaskan: kita ambil nilai terkini sahaja
-    # Untuk kesederhanaan, kita anggap signal line adalah EMA 9 dari MACD
-    # Kita akan return nilai terkini sahaja untuk keputusan
-    
-    return macd_line, signal_ema, None # Return full list, kita ambil yang terakhir
+    # Align signal line
+    signal_full = [None] * (len(prices) - len(signal_ema)) + signal_ema
+    return macd_line, signal_full, None
 
 def calculate_bollinger_bands(prices: List[float], period: int = 20, std_dev: int = 2) -> Tuple[List[float], List[float], List[float]]:
     sma = calculate_sma(prices, period)
@@ -176,7 +160,6 @@ def calculate_bollinger_bands(prices: List[float], period: int = 20, std_dev: in
             upper.append(None)
             lower.append(None)
         else:
-            # Kira std dev
             window = prices[i-period+1:i+1]
             mean = sum(window) / period
             variance = sum((x - mean) ** 2 for x in window) / period
@@ -196,23 +179,14 @@ def calculate_atr(candles: List[dict], period: int = 14) -> List[float]:
         tr_list.append(tr)
     
     atr = calculate_sma(tr_list, period)
-    return [None] + atr # Align
+    return [None] + atr
 
 def calculate_supertrend(candles: List[dict], period: int = 10, multiplier: float = 3.0) -> Tuple[List[float], List[str]]:
-    # Simplified SuperTrend
     high = [c["high"] for c in candles]
     low = [c["low"] for c in candles]
     close = [c["close"] for c in candles]
     
     atr = calculate_atr(candles, period)
-    tr = []
-    for i in range(1, len(candles)):
-        tr.append(max(candles[i]["high"] - candles[i]["low"], abs(candles[i]["high"] - candles[i-1]["close"]), abs(candles[i]["low"] - candles[i-1]["close"])))
-    
-    # Kita akan guna logik mudah: jika close > upper band (Basis) = Bullish
-    # Ini adalah implementasi ringkas. SuperTrend sebenar lebih kompleks.
-    # Kita akan guna ATR untuk menentukan trend.
-    
     supertrend = []
     trend = "NEUTRAL"
     
@@ -242,7 +216,6 @@ def calculate_supertrend(candles: List[dict], period: int = 10, multiplier: floa
     return supertrend, [trend] * len(candles)
 
 def detect_fvg_and_bos(candles: List[dict]) -> Dict:
-    # FVG & BOS (sama seperti sebelum ini)
     fvg_list = []
     for i in range(2, len(candles)):
         c1, c2, c3 = candles[i-2], candles[i-1], candles[i]
@@ -252,13 +225,17 @@ def detect_fvg_and_bos(candles: List[dict]) -> Dict:
             fvg_list.append({"type": "BEARISH", "top": c3["high"], "bottom": c1["low"]})
     
     # BOS
-    highs = [c["high"] for c in candles[-5:]]
-    lows = [c["low"] for c in candles[-5:]]
-    bos = "NEUTRAL"
-    if highs[-1] > highs[-3] and lows[-1] > lows[-3]:
-        bos = "BULLISH_BOS"
-    elif highs[-1] < highs[-3] and lows[-1] < lows[-3]:
-        bos = "BEARISH_BOS"
+    if len(candles) < 5:
+        bos = "NEUTRAL"
+    else:
+        highs = [c["high"] for c in candles[-5:]]
+        lows = [c["low"] for c in candles[-5:]]
+        if highs[-1] > highs[-3] and lows[-1] > lows[-3]:
+            bos = "BULLISH_BOS"
+        elif highs[-1] < highs[-3] and lows[-1] < lows[-3]:
+            bos = "BEARISH_BOS"
+        else:
+            bos = "NEUTRAL"
     
     return {"fvg": fvg_list, "bos": bos}
 
@@ -268,4 +245,116 @@ def detect_fvg_and_bos(candles: List[dict]) -> Dict:
 
 def analyze_market_strategies(asset_name: str) -> Tuple[str, str, str]:
     """
-    Analisis gabungan: S
+    Analisis gabungan: SMC, MACD, Bollinger, ATR, SuperTrend, Volume.
+    Returns: (signal_type, reason, zone)
+    """
+    candles = get_binance_candles(asset_name, "1h", 50)
+    if not candles:
+        return "WAIT", "Data tidak mencukupi", "N/A"
+    
+    # Dapatkan harga semasa
+    price = candles[-1]["close"]
+    prices = [c["close"] for c in candles]
+    
+    # Kira indikator
+    rsi = calculate_rsi(prices, 14)
+    macd_line, signal_line, _ = calculate_macd(prices)
+    sma, upper, lower = calculate_bollinger_bands(prices, 20, 2)
+    atr = calculate_atr(candles, 14)
+    supertrend, st_trend = calculate_supertrend(candles, 10, 3.0)
+    smc_data = detect_fvg_and_bos(candles)
+    
+    # Ambil nilai terkini
+    rsi_now = rsi[-1] if rsi and len(rsi) > 0 else None
+    macd_now = macd_line[-1] if macd_line and len(macd_line) > 0 else None
+    signal_now = signal_line[-1] if signal_line and len(signal_line) > 0 else None
+    upper_now = upper[-1] if upper and len(upper) > 0 else None
+    lower_now = lower[-1] if lower and len(lower) > 0 else None
+    atr_now = atr[-1] if atr and len(atr) > 0 else None
+    supertrend_now = supertrend[-1] if supertrend and len(supertrend) > 0 else None
+    bos = smc_data["bos"]
+    fvg_list = smc_data["fvg"]
+    
+    # Logik Signal
+    signal = "WAIT"
+    reason = "Tiada setup yang kuat."
+    zone = "N/A"
+    
+    # 1. SMC + Volume Breakout
+    if bos == "BULLISH_BOS" and fvg_list:
+        # Cari FVG Bullish terdekat
+        for fvg in reversed(fvg_list):
+            if fvg["type"] == "BULLISH" and price >= fvg["bottom"] and price <= fvg["top"]:
+                signal = "BUY (SMC + BOS)"
+                reason = f"BOS Naik + Harga masuk FVG Bullish di {fvg['top']:.2f} - {fvg['bottom']:.2f}"
+                zone = f"Buy Zone: {fvg['bottom']:.2f} - {fvg['top']:.2f}"
+                break
+    
+    elif bos == "BEARISH_BOS" and fvg_list:
+        for fvg in reversed(fvg_list):
+            if fvg["type"] == "BEARISH" and price <= fvg["top"] and price >= fvg["bottom"]:
+                signal = "SELL (SMC + BOS)"
+                reason = f"BOS Turun + Harga masuk FVG Bearish di {fvg['top']:.2f} - {fvg['bottom']:.2f}"
+                zone = f"Sell Zone: {fvg['bottom']:.2f} - {fvg['top']:.2f}"
+                break
+    
+    # 2. MACD + Bollinger Bands
+    if not signal or signal == "WAIT":
+        if rsi_now and rsi_now < 30 and macd_now and signal_now and macd_now > signal_now:
+            signal = "BUY (MACD + RSI)"
+            reason = "RSI Oversold + MACD Bullish Crossover"
+            zone = f"Buy Zone: {lower_now:.2f} - {upper_now:.2f}" if lower_now else "N/A"
+        
+        elif rsi_now and rsi_now > 70 and macd_now and signal_now and macd_now < signal_now:
+            signal = "SELL (MACD + RSI)"
+            reason = "RSI Overbought + MACD Bearish Crossover"
+            zone = f"Sell Zone: {lower_now:.2f} - {upper_now:.2f}" if lower_now else "N/A"
+    
+    # 3. SuperTrend + ATR Filter
+    if not signal or signal == "WAIT":
+        if supertrend_now and price > supertrend_now and atr_now and atr_now > 100:
+            signal = "BUY (SuperTrend)"
+            reason = "Trend Naik (SuperTrend) + Volatiliti Tinggi (ATR)"
+            zone = "N/A"
+        elif supertrend_now and price < supertrend_now and atr_now and atr_now > 100:
+            signal = "SELL (SuperTrend)"
+            reason = "Trend Turun (SuperTrend) + Volatiliti Tinggi (ATR)"
+            zone = "N/A"
+    
+    return signal, reason, zone
+
+# ─────────────────────────────────────────
+# FUNGSI UTAMA UNTUK BOT
+# ─────────────────────────────────────────
+
+def generate_ultimate_signal(asset_name: str, price: float) -> str:
+    """
+    Fungsi utama untuk bot.
+    """
+    signal_type, reason, zone = analyze_market_strategies(asset_name)
+    
+    fmt = lambda x: f"${x:,.2f}" if isinstance(x, float) else x
+
+    msg = (
+        f"⚡ *ULTIMATE SIGNAL: {asset_name}*\n\n"
+        f"💵 Harga: {fmt(price)}\n"
+        f"📊 Trend: {get_bos_display(get_bos_type(get_binance_candles(asset_name, '1h', 50)))}\n\n"
+        f"🚀 *SIGNAL:* {signal_type}\n\n"
+        f"📍 *Zon:* {zone}\n"
+        f"💡 *Analisis:* {reason}\n\n"
+        f"⚠️ *Amaran:* Gabungan indikator. Jangan entry buta!"
+    )
+    return msg
+
+# Helper functions
+def get_bos_type(candles):
+    if not candles: return "NEUTRAL"
+    return detect_fvg_and_bos(candles)["bos"]
+
+def get_bos_display(bos_type):
+    if bos_type == "BULLISH_BOS": return "🟢 BULLISH BOS"
+    if bos_type == "BEARISH_BOS": return "🔴 BEARISH BOS"
+    return "⚪ NEUTRAL"
+
+# Alias
+gold_market_operators = generate_ultimate_signal
