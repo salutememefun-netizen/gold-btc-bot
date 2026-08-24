@@ -18,8 +18,6 @@ SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Linux; Android 13) Chrome/12
 auto_chats = set()
 last_signals = {}
 
-# --- HELPER FUNCTIONS ---
-
 def gold_market_open():
     now = datetime.now(MY_TZ)
     wd, mins = now.weekday(), now.hour * 60 + now.minute
@@ -276,4 +274,34 @@ def liq_sweep(c, w=20):
     prev = c[-(w+1):-1]
     hi = max(z["high"] for z in prev)
     lo = min(z["low"] for z in prev)
-    if x["low"] <
+    if x["low"] < lo and x["close"] > lo: return "BULLISH SWEEP", lo
+    if x["high"] > hi and x["close"] < hi: return "BEARISH SWEEP", hi
+    return "NONE", None
+
+def bos_detect(c):
+    if len(c) < 15: return "NONE", None
+    x = c[-1]
+    p = c[-11:-1]
+    hi = max(z["high"] for z in p)
+    lo = min(z["low"] for z in p)
+    if x["close"] > hi: return "BULLISH BOS", hi
+    if x["close"] < lo: return "BEARISH BOS", lo
+    return "NONE", None
+
+def retest_detect(c, bos, bp, av):
+    if bos == "NONE" or bp is None or av is None: return "NONE", None
+    x = c[-1]
+    tol = av * 0.20
+    if bos == "BULLISH BOS" and x["low"] <= bp + tol and x["close"] > bp: return "BULLISH RETEST", bp
+    if bos == "BEARISH BOS" and x["high"] >= bp - tol and x["close"] < bp: return "BEARISH RETEST", bp
+    return "NONE", None
+
+def calc_bias(e20, e50, st, h1, h4, rv, div):
+    buy = sell = 0
+    if e20 is not None and e50 is not None:
+        if e20 > e50: buy += 1
+        elif e20 < e50: sell += 1
+    if st == "BULLISH": buy += 2
+    elif st == "BEARISH": sell += 2
+    if h1 == "BULLISH": buy += 2
+    elif h1 == "BEARISH": sell += 2
