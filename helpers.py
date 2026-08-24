@@ -1,6 +1,6 @@
 import requests
 import logging
-from typing import Optional, List
+from typing import Optional
 
 # Setup logging
 logging.basicConfig(
@@ -9,80 +9,92 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def get_crypto_price(coin_id: str = "bitcoin") -> Optional[float]:
-    """
-    Mengambil harga semasa cryptocurrency dari CoinGecko API.
-    """
+
+def get_btc_price() -> Optional[float]:
+    """Ambil harga BTC dari CoinGecko API."""
     url = "https://api.coingecko.com/api/v3/simple/price"
     params = {
-        "ids": coin_id,
+        "ids": "bitcoin",
         "vs_currencies": "usd"
     }
-    
     try:
         response = requests.get(url, params=params, timeout=5)
         response.raise_for_status()
         data = response.json()
-        
-        if coin_id in data and "usd" in data[coin_id]:
-            price = data[coin_id]["usd"]
-            logger.info(f"Harga {coin_id}: ${price:,.2f}")
-            return price
-        else:
-            logger.warning(f"Data harga tidak dijumpai untuk {coin_id}")
-            return None
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ralat rangkaian semasa mengambil harga {coin_id}: {e}")
+        price = data["bitcoin"]["usd"]
+        logger.info(f"Harga BTC: ${price:,.2f}")
+        return price
+    except Exception as e:
+        logger.error(f"Ralat ambil harga BTC: {e}")
         return None
-    except ValueError as e:
-        logger.error(f"Ralat parsing JSON untuk {coin_id}: {e}")
+
+
+def get_gold_price() -> Optional[float]:
+    """
+    Ambil harga GOLD (XAU/USD) dari xaus.com.
+    Percuma, tiada API key diperlukan.
+    """
+    url = "https://xaus.com/api/v1/spot"
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        price = data["spot_usd_oz"]
+        logger.info(f"Harga GOLD: ${price:,.2f}")
+        return price
+    except Exception as e:
+        logger.error(f"Ralat ambil harga GOLD: {e}")
         return None
+
+
+def get_market_sentiment(btc_price: float, gold_price: float) -> str:
+    """Analisis trend mudah berdasarkan harga semasa."""
+    btc_trend = "🟢 Naik" if btc_price > 60000 else "🔴 Turun"
+    gold_trend = "🟢 Naik" if gold_price > 2000 else "🔴 Turun"
+
+    if btc_price > 65000 and gold_price > 2400:
+        sentiment = "🚀 *Bullish* - Kedua-dua aset menunjukkan kekuatan."
+    elif btc_price < 55000 and gold_price < 2000:
+        sentiment = "📉 *Bearish* - Pasaran sedang lemah."
+    else:
+        sentiment = "⚖️ *Neutral* - Pasaran dalam keadaan tidak menentu."
+
+    return btc_trend, gold_trend, sentiment
+
 
 def analyze_gold_btc() -> str:
     """
-    Fungsi utama untuk analisis harga BTC dan GOLD.
+    Fungsi utama analisis GOLD & BTC.
     Dipanggil oleh bot apabila user ketik /analyze.
     """
-    # Ambil harga BTC
-    btc_price = get_crypto_price("bitcoin")
-    
-    # Ambil harga GOLD (XAU)
-    # Nota: CoinGecko menggunakan 'xau-tether' atau 'gold' untuk data emas
-    gold_price = get_crypto_price("xau-tether")
-    if not gold_price:
-        # Fallback jika ID pertama gagal
-        gold_price = get_crypto_price("gold")
-    
-    # Bina mesej
+    btc_price = get_btc_price()
+    gold_price = get_gold_price()
+
+    # Bina baris harga
     btc_msg = f"💰 BTC: ${btc_price:,.2f}" if btc_price else "❌ Gagal ambil harga BTC"
-    gold_msg = f"🏆 GOLD: ${gold_price:,.2f}" if gold_price else "❌ Gagal ambil harga GOLD"
-    
-    # Logik analisis ringkas
-    analysis = ""
+    gold_msg = f"🏆 GOLD (XAU): ${gold_price:,.2f}" if gold_price else "❌ Gagal ambil harga GOLD"
+
+    # Bina analisis
     if btc_price and gold_price:
-        # Logik trend sangat mudah (contoh sahaja)
-        btc_trend = "🟢 Naik" if btc_price > 60000 else "🔴 Turun"
-        gold_trend = "🟢 Naik" if gold_price > 2300 else "🔴 Turun"
-        
+        btc_trend, gold_trend, sentiment = get_market_sentiment(btc_price, gold_price)
         analysis = (
             f"\n\n📊 *Analisis Trend:*\n"
             f"- BTC: {btc_trend}\n"
-            f"- GOLD: {gold_trend}\n\n"
-            f"⚠️ *Amaran:* Ini adalah analisis automatik. Sila buat kajian sendiri sebelum trade."
+            f"- GOLD: {gold_trend}\n"
+            f"- Sentimen: {sentiment}\n\n"
+            f"⚠️ *Amaran:* Ini adalah analisis automatik. "
+            f"Sila buat kajian sendiri sebelum trade."
         )
     else:
-        analysis = "\n\n⚠️ *Analisis:* Tidak dapat menyiapkan laporan penuh (API mungkin sibuk)."
+        analysis = "\n\n⚠️ Data tidak lengkap. Sila cuba lagi sebentar."
 
-    return f"📈 *Laporan Pasaran Kripto & Komoditi*\n\n{btc_msg}\n{gold_msg}{analysis}"
+    return (
+        f"📈 *Laporan Pasaran Kripto & Komoditi*\n\n"
+        f"{btc_msg}\n"
+        f"{gold_msg}"
+        f"{analysis}"
+    )
 
-def calculate_sma(prices: List[float], period: int = 7) -> Optional[float]:
-    """Kira Simple Moving Average."""
-    if not prices or len(prices) < period:
-        return None
-    return round(sum(prices[-period:]) / period, 2)
 
-# --- PENYELESAIAN IMPORT ERROR ---
-# Fungsi ini wujud semata-mata untuk menyelaraskan dengan kod lama yang mungkin
-# cuba mengimport 'gold_market_operators'. Ia hanya merujuk kepada fungsi utama.
+# Alias untuk keserasian import lama (jangan padam)
 gold_market_operators = analyze_gold_btc
