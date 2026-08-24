@@ -149,10 +149,7 @@ def binance_candles(symbol, interval="15m", limit=200):
 def coingecko_ohlc(coin_id, days=90):
     url = "https://api.coingecko.com/api/v3/coins/" + coin_id + "/ohlc"
     try:
-        r = SESSION.get(url, params={
-            "vs_currency": "usd",
-            "days": days
-        }, timeout=15)
+        r = SESSION.get(url, params={"vs_currency": "usd", "days": days}, timeout=15)
         if r.status_code != 200:
             return []
         candles = []
@@ -235,7 +232,6 @@ def get_candles(asset, timeframe="15m", minimum=20):
             ("Gold Scaled", lambda: gold_candles_scaled()),
             ("CoinGecko PAXG", lambda: (coingecko_ohlc("pax-gold", 90), "CoinGecko-PAXG")),
         ]
-
     for source_name, source_func in sources:
         try:
             result = source_func()
@@ -367,9 +363,7 @@ def atr(c, n=14):
     tr = []
     for i in range(1, len(c)):
         x, p = c[i], c[i-1]
-        tr.append(max(x["high"]-x["low"],
-                      abs(x["high"]-p["close"]),
-                      abs(x["low"]-p["close"])))
+        tr.append(max(x["high"]-x["low"], abs(x["high"]-p["close"]), abs(x["low"]-p["close"])))
     if len(tr) < n:
         return None
     a = sum(tr[:n])/n
@@ -385,9 +379,7 @@ def adx(c, n=14):
         x, p = c[i], c[i-1]
         hd = x["high"] - p["high"]
         ld = p["low"] - x["low"]
-        tr.append(max(x["high"]-x["low"],
-                      abs(x["high"]-p["close"]),
-                      abs(x["low"]-p["close"])))
+        tr.append(max(x["high"]-x["low"], abs(x["high"]-p["close"]), abs(x["low"]-p["close"])))
         pdm.append(hd if hd > ld and hd > 0 else 0)
         mdm.append(ld if ld > hd and ld > 0 else 0)
     ta = sum(tr[:n])/n
@@ -554,238 +546,4 @@ def analyze_asset(asset):
     ax = adx(c15)
     divergence = rsi_divergence(c15)
     structure = market_structure(c15)
-    slw_raw, shw_raw = get_swings(c15, 30)
-
-    scale = (real_price / closes[-1]) if (asset == "gold" and real_price and closes[-1] > 0) else 1.0
-    slw = slw_raw * scale if slw_raw else None
-    shw = shw_raw * scale if shw_raw else None
-
-    h1trend = "NEUTRAL"
-    if len(c1h) >= 20:
-        hc = [x["close"] for x in c1h]
-        a = ema(hc, 20) if len(hc) >= 20 else None
-        b = ema(hc, 50) if len(hc) >= 50 else None
-        if a is not None and b is not None:
-            h1trend = "BULLISH" if a > b else "BEARISH" if a < b else "NEUTRAL"
-
-    trend_4h = "NEUTRAL"
-    if len(c4h) >= 20:
-        hc4 = [x["close"] for x in c4h]
-        a4 = ema(hc4, 20) if len(hc4) >= 20 else None
-        b4 = ema(hc4, 50) if len(hc4) >= 50 else None
-        if a4 is not None and b4 is not None:
-            trend_4h = "BULLISH" if a4 > b4 else "BEARISH" if a4 < b4 else "NEUTRAL"
-
-    news = get_forex_news()
-    news_risk, news_msg = check_news_risk(news)
-
-    bias, bp, sp = calculate_bias(e20, e50, structure, h1trend, trend_4h, rv, divergence)
-    liq, lprice = liquidity_sweep(c15, 20)
-    candle = candle_confirmation(c15)
-    bos, bosprice = detect_bos(c15)
-    retest, retprice = detect_retest(c15, bos, bosprice, av)
-
-    if asset == "gold":
-        if lprice:
-            lprice = lprice * scale
-        if bosprice:
-            bosprice = bosprice * scale
-
-    score = 0
-    if bias == "BUY":
-        if liq == "BULLISH SWEEP":
-            score += 25
-        if candle in ("BULLISH ENGULFING", "BULLISH CANDLE"):
-            score += 20
-        if bos == "BULLISH BOS":
-            score += 25
-        if retest == "BULLISH RETEST":
-            score += 30
-    elif bias == "SELL":
-        if liq == "BEARISH SWEEP":
-            score += 25
-        if candle in ("BEARISH ENGULFING", "BEARISH CANDLE"):
-            score += 20
-        if bos == "BEARISH BOS":
-            score += 25
-        if retest == "BEARISH RETEST":
-            score += 30
-
-    direction = "WAIT"
-    if not news_risk:
-        if bias == "BUY":
-            if liq == "BULLISH SWEEP" and candle in ("BULLISH ENGULFING", "BULLISH CANDLE") and bos == "BULLISH BOS" and retest == "BULLISH RETEST":
-                direction = "BUY"
-            elif score >= 75 and candle in ("BULLISH ENGULFING", "BULLISH CANDLE") and bos == "BULLISH BOS" and retest == "BULLISH RETEST":
-                direction = "BUY"
-        elif bias == "SELL":
-            if liq == "BEARISH SWEEP" and candle in ("BEARISH ENGULFING", "BEARISH CANDLE") and bos == "BEARISH BOS" and retest == "BEARISH RETEST":
-                direction = "SELL"
-            elif score >= 75 and candle in ("BEARISH ENGULFING", "BEARISH CANDLE") and bos == "BEARISH BOS" and retest == "BEARISH RETEST":
-                direction = "SELL"
-
-    if direction in ("BUY", "SELL"):
-        confidence = min(95, int(55 + score * 0.40))
-    else:
-        confidence = min(59, int(40 + abs(bp-sp)*4 + score * 0.10))
-
-    ref = bosprice if bosprice is not None else lprice
-    safe_av = av if av else price * 0.005
-    safe_av = safe_av * scale if asset == "gold" and scale != 1.0 else safe_av
-    zl, zh = build_zone(price, safe_av, ref if ref else price)
-
-    sl = tp1 = tp2 = rr1 = rr2 = None
-    if direction == "BUY":
-        protect = lprice if lprice else (slw if slw else price * 0.99)
-        sl = protect - safe_av * 0.30
-        risk = max(price - sl, safe_av)
-        tp1 = price + risk * 1.5
-        tp2 = price + risk * 2.5
-        rr1 = round((tp1 - price) / risk, 1) if risk > 0 else 0
-        rr2 = round((tp2 - price) / risk, 1) if risk > 0 else 0
-    elif direction == "SELL":
-        protect = lprice if lprice else (shw if shw else price * 1.01)
-        sl = protect + safe_av * 0.30
-        risk = max(sl - price, safe_av)
-        tp1 = price - risk * 1.5
-        tp2 = price - risk * 2.5
-        rr1 = round((price - tp1) / risk, 1) if risk > 0 else 0
-        rr2 = round((price - tp2) / risk, 1) if risk > 0 else 0
-
-    save_history(asset, direction, price, score)
-
-    missing = []
-    if direction == "WAIT":
-        if bias == "BUY":
-            if candle not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
-                missing.append("Bullish candle")
-            if bos != "BULLISH BOS":
-                missing.append("Bullish BOS")
-            if retest != "BULLISH RETEST":
-                missing.append("Retest")
-            if liq != "BULLISH SWEEP":
-                missing.append("Liquidity sweep (optional)")
-        elif bias == "SELL":
-            if candle not in ("BEARISH ENGULFING", "BEARISH CANDLE"):
-                missing.append("Bearish candle")
-            if bos != "BEARISH BOS":
-                missing.append("Bearish BOS")
-            if retest != "BEARISH RETEST":
-                missing.append("Retest")
-            if liq != "BEARISH SWEEP":
-                missing.append("Liquidity sweep (optional)")
-        else:
-            missing.append("Directional bias")
-
-    reasons = []
-    if e20 and e50:
-        reasons.append("EMA20 di atas EMA50" if e20 > e50 else "EMA20 di bawah EMA50")
-    if structure != "NEUTRAL":
-        reasons.append("Structure 15M " + structure)
-    if h1trend != "NEUTRAL":
-        reasons.append("Trend 1H " + h1trend)
-    if trend_4h != "NEUTRAL":
-        reasons.append("Trend 4H " + trend_4h)
-    if divergence != "NONE":
-        reasons.append(divergence)
-    if liq != "NONE":
-        reasons.append(liq)
-    if candle != "NONE":
-        reasons.append(candle)
-    if bos != "NONE":
-        reasons.append(bos)
-    if retest != "NONE":
-        reasons.append(retest)
-    if news_risk:
-        reasons.append("NEWS RISK - " + news_msg)
-    if not reasons:
-        reasons.append("Belum ada confirmation")
-
-    return {
-        "market_open": True, "price": price, "direction": direction, "bias": bias,
-        "confidence": confidence, "trigger_score": score, "structure": structure,
-        "h1_trend": h1trend, "trend_4h": trend_4h,
-        "rsi": rv if rv is not None else 0.0,
-        "adx": ax if ax is not None else 0.0,
-        "atr": safe_av, "divergence": divergence,
-        "liquidity": liq, "liquidity_price": lprice,
-        "candle_confirmation": candle, "bos": bos,
-        "bos_price": bosprice, "retest": retest,
-        "entry_low": zl, "entry_high": zh,
-        "swing_low": slw if slw else price * 0.99,
-        "swing_high": shw if shw else price * 1.01,
-        "sl": sl, "tp1": tp1, "tp2": tp2,
-        "rr1": rr1, "rr2": rr2,
-        "news_risk": news_risk, "news_msg": news_msg,
-        "session": get_session_name(),
-        "reasons": reasons, "missing": missing,
-        "source_15m": s15 or "N/A", "source_1h": s1h or "N/A",
-        "source_4h": s4h or "N/A"
-    }
-
-def fmt(val):
-    if val is None:
-        return "N/A"
-    return "{:,.2f}".format(val)
-
-def format_closed(asset, result):
-    now = datetime.now(MY_TZ)
-    name = "GOLD XAUUSD" if asset == "gold" else "BITCOIN BTC"
-    return "🔴 *" + name + " MARKET CLOSED*\n\n🕐 `" + now.strftime("%d/%m/%Y %H:%M") + "`\n📌 Status: `" + result.get("market_reason", "CLOSED") + "`"
-
-def format_signal(asset, r):
-    if r is None:
-        return "❌ *DATA GAGAL*\n\nSemua sumber data tidak tersedia.\n🔄 Cuba semula selepas beberapa saat."
-    if not r.get("market_open", True):
-        return format_closed(asset, r)
-
-    name = "GOLD (XAUUSD)" if asset == "gold" else "BITCOIN (BTC)"
-    emoji = "🥇" if asset == "gold" else "₿"
-    d = r["direction"]
-    b = r["bias"]
-    now = datetime.now(MY_TZ).strftime("%d/%m/%Y %H:%M")
-
-    msg = emoji + " *" + name + " SIGNAL V8.0*\n"
-    msg += "🕐 `" + now + "` | 🌍 `" + r["session"] + "`\n\n"
-    msg += "💰 Harga: `$" + fmt(r["price"]) + "`\n"
-
-    if r["news_risk"]:
-        msg += "\n⚠️ *NEWS ALERT*\n`" + r["news_msg"] + "`\n"
-
-    if d == "BUY":
-        msg += "\n🟢 *SIGNAL: BUY*\n🚀 Entry trigger aktif\n"
-    elif d == "SELL":
-        msg += "\n🔴 *SIGNAL: SELL*\n🚀 Entry trigger aktif\n"
-    else:
-        msg += "\n🟡 *SIGNAL: WAIT*\n⏳ Tunggu confirmation\n"
-
-    msg += "\n🧭 *Bias:* `" + b + "`\n"
-    msg += "💯 *Confidence:* `" + str(r["confidence"]) + "%`\n"
-    msg += "🎯 *Score:* `" + str(r["trigger_score"]) + "/100`\n"
-    msg += "📐 *Structure 15M:* `" + r["structure"] + "`\n"
-    msg += "🕐 *Trend 1H:* `" + r["h1_trend"] + "`\n"
-    msg += "📊 *Trend 4H:* `" + r["trend_4h"] + "`\n"
-    msg += "📈 *RSI:* `" + "{:.1f}".format(r["rsi"]) + "`\n"
-    msg += "📉 *ADX:* `" + "{:.1f}".format(r["adx"]) + "`\n"
-    msg += "🔀 *Divergence:* `" + r["divergence"] + "`\n\n"
-
-    msg += "💧 *LIQUIDITY*\n`" + r["liquidity"] + "`\n\n"
-    msg += "🕯 *CANDLE*\n`" + r["candle_confirmation"] + "`\n\n"
-    msg += "📐 *BOS*\n`" + r["bos"] + "`\n\n"
-    msg += "🔄 *RETEST*\n`" + r["retest"] + "`\n\n"
-
-    if d == "BUY":
-        trig = "🟢 BUY TRIGGER ACTIVE"
-    elif d == "SELL":
-        trig = "🔴 SELL TRIGGER ACTIVE"
-    elif b == "BUY":
-        if r["candle_confirmation"] not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
-            trig = "🟡 WAIT FOR BULLISH CANDLE"
-        elif r["bos"] != "BULLISH BOS":
-            trig = "🟡 WAIT FOR BULLISH BOS"
-        elif r["retest"] != "BULLISH RETEST":
-            trig = "🟡 WAIT FOR BULLISH RETEST"
-        else:
-            trig = "🟡 WAIT FOR CONFIRMATION"
-    elif b == "SELL":
-        if r["candle_
+    slw_raw, shw_raw = get_swings(c15,
