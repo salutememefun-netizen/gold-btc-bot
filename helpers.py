@@ -307,3 +307,92 @@ def analyze_gold_btc() -> str:
 
 # Alias
 gold_market_operators = analyze_gold_btc
+# ─────────────────────────────────────────
+# DATABASE FUNCTIONS (PostgreSQL)
+# ─────────────────────────────────────────
+import psycopg2
+import os
+
+DB_URL = os.getenv("DATABASE_URL")  # Railway akan set ini automatik
+
+def get_db_connection():
+    """Sambung ke PostgreSQL"""
+    if not DB_URL:
+        return None
+    try:
+        return psycopg2.connect(DB_URL)
+    except Exception as e:
+        logger.error(f"Ralat DB: {e}")
+        return None
+
+def init_db():
+    """Cipta table subscribers jika belum ada"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subscribers (
+                chat_id BIGINT PRIMARY KEY,
+                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ralat init DB: {e}")
+        return False
+
+def add_subscriber_db(chat_id: int) -> bool:
+    """Tambah subscriber ke database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO subscribers (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING",
+            (chat_id,)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ralat add subscriber: {e}")
+        return False
+
+def remove_subscriber_db(chat_id: int) -> bool:
+    """Buang subscriber dari database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM subscribers WHERE chat_id = %s", (chat_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ralat remove subscriber: {e}")
+        return False
+
+def get_all_subscribers() -> list:
+    """Dapatkan semua chat_id subscriber"""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT chat_id FROM subscribers")
+        subscribers = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return subscribers
+    except Exception as e:
+        logger.error(f"Ralat get subscribers: {e}")
+        return []
