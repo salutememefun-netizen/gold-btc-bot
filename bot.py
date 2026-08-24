@@ -16,10 +16,9 @@ ALERT_STATE_FILE = "/tmp/alert_state.json"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Linux; Android 13) Chrome/120"})
 
-# Global state untuk tracking signal sebelumnya
 last_signal_state = {}
 auto_polling_active = False
-polling_interval = 300  # 5 minit
+polling_interval = 300
 
 
 def gold_market_open():
@@ -372,4 +371,4 @@ def candle_conf(c):
     xa = x["close"] < x["open"]
     if p["close"] < p["open"] and xb and x["open"] <= p["close"] and x["close"] >= p["open"]:
         return "BULLISH ENGULFING"
-    if p["close"] > p["open"] and xa and x["open"]
+    if p["close"] > p["open"] and xa and x["open"] >= p["close"] and x["
