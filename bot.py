@@ -3,7 +3,15 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
-from helpers import analyze_gold_btc, get_btc_price, get_gold_price, generate_signal
+
+# Import fungsi yang BETUL dari helpers.py
+# Perhatikan: generate_signal ditukar kepada generate_smart_signal
+from helpers import (
+    analyze_gold_btc, 
+    get_btc_price, 
+    get_gold_price, 
+    generate_smart_signal
+)
 
 # Load environment variables
 load_dotenv()
@@ -36,8 +44,8 @@ def get_main_menu():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome = (
-        "🤖 *Bot Signal Pro: GOLD & BTC*\n\n"
-        "Dapatkan zon entry Buy/Sell secara automatik.\n\n"
+        "🤖 *Bot Signal PRO: Smart Zones*\n\n"
+        "Analisis pintar dengan zon entry adaptif mengikut trend.\n\n"
         "Pilih menu di bawah:"
     )
     await update.message.reply_text(welcome, parse_mode='Markdown', reply_markup=get_main_menu())
@@ -50,16 +58,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == 'sig_btc':
-        await query.edit_message_text("🔄 Mengira zon BTC...")
+        await query.edit_message_text("🔄 Mengira zon pintar BTC...")
         price = get_btc_price()
-        msg = generate_signal("BTC", price) if price else "❌ Gagal ambil data BTC."
+        # Panggil fungsi yang betul
+        msg = generate_smart_signal("BTC", price) if price else "❌ Gagal ambil data BTC."
         await query.edit_message_text(msg, parse_mode='Markdown')
         await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=get_main_menu())
 
     elif query.data == 'sig_gold':
-        await query.edit_message_text("🔄 Mengira zon GOLD...")
+        await query.edit_message_text("🔄 Mengira zon pintar GOLD...")
         price = get_gold_price()
-        msg = generate_signal("GOLD", price) if price else "❌ Gagal ambil data GOLD."
+        # Panggil fungsi yang betul
+        msg = generate_smart_signal("GOLD", price) if price else "❌ Gagal ambil data GOLD."
         await query.edit_message_text(msg, parse_mode='Markdown')
         await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=get_main_menu())
 
@@ -71,13 +81,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == 'refresh':
         await query.edit_message_text("🔄 Harga dikemaskini...")
-        # Refresh dengan laporan penuh
         msg = analyze_gold_btc()
         await query.edit_message_text(msg, parse_mode='Markdown')
         await context.bot.send_message(chat_id=query.message.chat_id, text="Menu:", reply_markup=get_main_menu())
 
 def main():
-    logging.info("Bot Signal Pro sedang berjalan...")
+    logging.info("Bot Signal PRO sedang berjalan...")
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
