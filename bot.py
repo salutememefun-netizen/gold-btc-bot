@@ -1,5 +1,5 @@
 import os, logging, requests, json
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -11,16 +11,12 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 TWELVE_KEY = os.getenv("TWELVE_API_KEY", "")
 MY_TZ = ZoneInfo("Asia/Kuala_Lumpur")
-HISTORY_FILE = "signal_history.json"
+HISTORY_FILE = "/tmp/signal_history.json"
 
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Safari/537.36"
 })
-
-# ============================================================
-# MARKET STATUS
-# ============================================================
 
 def gold_market_status():
     now = datetime.now(MY_TZ)
@@ -40,17 +36,13 @@ def btc_market_status():
 def get_session_name():
     now = datetime.now(MY_TZ)
     h = now.hour
+    if 15 <= h < 24:
+        return "NEW YORK"
     if 8 <= h < 17:
         return "LONDON"
-    if 13 <= h < 22:
-        return "NEW YORK"
-    if 0 <= h < 9:
+    if 2 <= h < 11:
         return "TOKYO"
     return "SYDNEY"
-
-# ============================================================
-# SIGNAL HISTORY
-# ============================================================
 
 def load_history():
     try:
@@ -61,29 +53,32 @@ def load_history():
         pass
     return []
 
-def save_history(record):
+def save_history(asset, direction, price, score):
     try:
         history = load_history()
-        history.append(record)
+        history.append({
+            "time": datetime.now(MY_TZ).strftime("%d/%m/%Y %H:%M"),
+            "asset": asset,
+            "direction": direction,
+            "price": price,
+            "score": score
+        })
         history = history[-50:]
         with open(HISTORY_FILE, "w") as f:
             json.dump(history, f)
     except Exception as e:
         logger.warning("Save history error: %s", e)
 
-def get_stats():
+def get_stats(asset):
     history = load_history()
-    if not history:
+    filtered = [h for h in history if h.get("asset") == asset]
+    if not filtered:
         return None
-    total = len(history)
-    buy = sum(1 for h in history if h.get("direction") == "BUY")
-    sell = sum(1 for h in history if h.get("direction") == "SELL")
-    wait = sum(1 for h in history if h.get("direction") == "WAIT")
+    total = len(filtered)
+    buy = sum(1 for h in filtered if h.get("direction") == "BUY")
+    sell = sum(1 for h in filtered if h.get("direction") == "SELL")
+    wait = sum(1 for h in filtered if h.get("direction") == "WAIT")
     return {"total": total, "buy": buy, "sell": sell, "wait": wait}
-
-# ============================================================
-# TWELVE DATA - XAUUSD SEBENAR
-# ============================================================
 
 def twelvedata_candles(symbol, interval="15min", outputsize=200):
     if not TWELVE_KEY:
@@ -119,55 +114,8 @@ def twelvedata_candles(symbol, interval="15min", outputsize=200):
         logger.info("TwelveData %s: %d candles", symbol, len(candles))
         return candles
     except Exception as e:
-        logger.warning("TwelveData %s error: %s", symbol, e)
+        logger.warning("TwelveData error: %s", e)
         return []
-
-# ============================================================
-# ALPHA VANTAGE - XAUUSD FALLBACK
-# ============================================================
-
-def alphavantage_candles(symbol="XAU", interval="15min"):
-    key = os.getenv("ALPHA_KEY", "demo")
-    url = "https://www.alphavantage.co/query"
-    try:
-        r = SESSION.get(url, params={
-            "function": "FX_INTRADAY",
-            "from_symbol": "XAU",
-            "to_symbol": "USD",
-            "interval": interval,
-            "outputsize": "full",
-            "apikey": key
-        }, timeout=20)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        key_name = "Time Series FX (" + interval + ")"
-        ts = data.get(key_name, {})
-        if not ts:
-            return []
-        candles = []
-        for dt in sorted(ts.keys()):
-            try:
-                item = ts[dt]
-                candles.append({
-                    "time": dt,
-                    "open": float(item.get("1. open", 0)),
-                    "high": float(item.get("2. high", 0)),
-                    "low": float(item.get("3. low", 0)),
-                    "close": float(item.get("4. close", 0)),
-                    "volume": 0
-                })
-            except (TypeError, ValueError):
-                continue
-        logger.info("AlphaVantage %s: %d candles", symbol, len(candles))
-        return candles
-    except Exception as e:
-        logger.warning("AlphaVantage error: %s", e)
-        return []
-
-# ============================================================
-# BINANCE CANDLES
-# ============================================================
 
 def binance_candles(symbol, interval="15m", limit=200):
     url = "https://api.binance.com/api/v3/klines"
@@ -198,10 +146,6 @@ def binance_candles(symbol, interval="15m", limit=200):
         logger.warning("Binance %s error: %s", symbol, e)
         return []
 
-# ============================================================
-# COINGECKO
-# ============================================================
-
 def coingecko_ohlc(coin_id, days=90):
     url = "https://api.coingecko.com/api/v3/coins/" + coin_id + "/ohlc"
     try:
@@ -230,16 +174,10 @@ def coingecko_ohlc(coin_id, days=90):
         logger.warning("CoinGecko error: %s", e)
         return []
 
-# ============================================================
-# REAL GOLD PRICE
-# ============================================================
-
 def get_real_gold_price():
     apis = [
-        ("https://api.metals.live/v1/spot/gold",
-         lambda r: r.json().get("price")),
-        ("https://api.gold-api.com/price/XAU",
-         lambda r: r.json().get("price")),
+        ("https://api.metals.live/v1/spot/gold", lambda r: r.json().get("price")),
+        ("https://api.gold-api.com/price/XAU", lambda r: r.json().get("price")),
     ]
     for url, parser in apis:
         try:
@@ -251,10 +189,6 @@ def get_real_gold_price():
         except Exception as e:
             logger.warning("Gold price error: %s", e)
     return None, None
-
-# ============================================================
-# GOLD CANDLES SCALED FROM PAXG
-# ============================================================
 
 def gold_candles_scaled():
     paxg = binance_candles("PAXGUSDT", "15m", 200)
@@ -279,36 +213,28 @@ def gold_candles_scaled():
             "close": c["close"] * ratio,
             "volume": c["volume"]
         })
-    logger.info("Gold scaled: last=%.2f real=%.2f ratio=%.6f",
-                scaled[-1]["close"], real_gold, ratio)
+    logger.info("Gold scaled ratio=%.6f last=%.2f", ratio, scaled[-1]["close"])
     return scaled, "XAUUSD-Spot"
-
-# ============================================================
-# GET CANDLES - MULTI SOURCE
-# ============================================================
 
 def get_candles(asset, timeframe="15m", minimum=20):
     if asset == "btc":
         sources = [
             ("Binance 15m", lambda: (binance_candles("BTCUSDT", "15m", 200), "Binance-15m")),
             ("Binance 1h", lambda: (binance_candles("BTCUSDT", "1h", 200), "Binance-1h")),
-            ("CoinGecko BTC", lambda: (coingecko_ohlc("bitcoin", 90), "CoinGecko")),
+            ("CoinGecko", lambda: (coingecko_ohlc("bitcoin", 90), "CoinGecko")),
         ]
-    elif asset == "gold":
-        if timeframe == "1h":
-            sources = [
-                ("TwelveData 1h", lambda: (twelvedata_candles("XAU/USD", "1h", 200), "TwelveData-1h")),
-                ("Gold Scaled 1h", lambda: (binance_candles("PAXGUSDT", "1h", 200), "PAXG-1h")),
-                ("Gold Scaled 15m", lambda: gold_candles_scaled()),
-            ]
-        else:
-            sources = [
-                ("TwelveData 15m", lambda: (twelvedata_candles("XAU/USD", "15min", 200), "TwelveData-15m")),
-                ("Gold Scaled", lambda: gold_candles_scaled()),
-                ("CoinGecko PAXG", lambda: (coingecko_ohlc("pax-gold", 90), "CoinGecko-PAXG")),
-            ]
+    elif timeframe in ("1h", "4h"):
+        sources = [
+            ("TwelveData 1h", lambda: (twelvedata_candles("XAU/USD", "1h", 200), "TwelveData-1h")),
+            ("PAXG 1h", lambda: (binance_candles("PAXGUSDT", "1h", 200), "PAXG-1h")),
+            ("Gold Scaled", lambda: gold_candles_scaled()),
+        ]
     else:
-        return [], None
+        sources = [
+            ("TwelveData 15m", lambda: (twelvedata_candles("XAU/USD", "15min", 200), "TwelveData-15m")),
+            ("Gold Scaled", lambda: gold_candles_scaled()),
+            ("CoinGecko PAXG", lambda: (coingecko_ohlc("pax-gold", 90), "CoinGecko-PAXG")),
+        ]
 
     for source_name, source_func in sources:
         try:
@@ -318,18 +244,12 @@ def get_candles(asset, timeframe="15m", minimum=20):
             else:
                 candles, src = result, source_name
             if candles and len(candles) >= minimum:
-                logger.info("%s %s from %s: %d candles", asset, timeframe, src, len(candles))
+                logger.info("%s %s: %d candles from %s", asset, timeframe, len(candles), src)
                 return candles, src
-            logger.warning("%s from %s: only %d candles", asset, source_name, len(candles) if candles else 0)
+            logger.warning("%s from %s: only %d", asset, source_name, len(candles) if candles else 0)
         except Exception as e:
             logger.warning("%s from %s failed: %s", asset, source_name, e)
-            continue
-
     return [], None
-
-# ============================================================
-# LIVE PRICE
-# ============================================================
 
 def get_live_price(asset):
     if asset == "btc":
@@ -341,10 +261,8 @@ def get_live_price(asset):
         ]
     else:
         apis = [
-            ("https://api.metals.live/v1/spot/gold",
-             lambda r: r.json().get("price")),
-            ("https://api.gold-api.com/price/XAU",
-             lambda r: r.json().get("price")),
+            ("https://api.metals.live/v1/spot/gold", lambda r: r.json().get("price")),
+            ("https://api.gold-api.com/price/XAU", lambda r: r.json().get("price")),
         ]
     for url, parser in apis:
         try:
@@ -357,13 +275,8 @@ def get_live_price(asset):
             logger.warning("Price API error: %s", e)
     return None, None
 
-# ============================================================
-# NEWS ENGINE - FOREXFACTORY
-# ============================================================
-
 def get_forex_news():
     try:
-        now = datetime.now(MY_TZ)
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         r = SESSION.get(url, timeout=10)
         if r.status_code != 200:
@@ -371,23 +284,21 @@ def get_forex_news():
         events = r.json()
         relevant = []
         for event in events:
-            impact = event.get("impact", "").upper()
-            currency = event.get("country", "").upper()
-            title = event.get("title", "")
-            date_str = event.get("date", "")
+            impact = str(event.get("impact", "")).upper()
+            currency = str(event.get("country", "")).upper()
             if impact == "HIGH" and currency in ("USD", "XAU"):
                 relevant.append({
-                    "title": title,
+                    "title": event.get("title", ""),
                     "impact": impact,
                     "currency": currency,
-                    "date": date_str
+                    "date": event.get("date", "")
                 })
         return relevant[:5]
     except Exception as e:
-        logger.warning("ForexFactory news error: %s", e)
+        logger.warning("ForexFactory error: %s", e)
         return []
 
-def news_risk_warning(news):
+def check_news_risk(news):
     if not news:
         return False, ""
     now = datetime.now(MY_TZ)
@@ -400,14 +311,10 @@ def news_risk_warning(news):
             event_local = event_dt.astimezone(MY_TZ)
             diff = abs((event_local - now).total_seconds() / 60)
             if diff <= 30:
-                return True, "⚠️ HIGH IMPACT NEWS dalam " + str(int(diff)) + " minit: " + event.get("title", "")
+                return True, "HIGH IMPACT NEWS dalam " + str(int(diff)) + " minit: " + event.get("title", "")
         except Exception:
             continue
     return False, ""
-
-# ============================================================
-# INDICATORS
-# ============================================================
 
 def ema(v, n):
     if len(v) < n:
@@ -434,14 +341,23 @@ def rsi(v, n=14):
         return 100.0
     return 100 - 100/(1 + ag/al)
 
-def rsi_divergence(candles, rsi_values, lookback=10):
-    if len(candles) < lookback or len(rsi_values) < lookback:
+def rsi_divergence(candles, lookback=10):
+    if len(candles) < lookback + 14:
         return "NONE"
-    prices = [c["close"] for c in candles[-lookback:]]
-    rsis = rsi_values[-lookback:]
-    if prices[-1] < prices[0] and rsis[-1] > rsis[0]:
+    closes = [c["close"] for c in candles]
+    rsi_vals = []
+    for i in range(len(closes)):
+        if i >= 14:
+            rsi_vals.append(rsi(closes[max(0, i-28):i+1]))
+        else:
+            rsi_vals.append(None)
+    recent_rsi = [x for x in rsi_vals[-lookback:] if x is not None]
+    if len(recent_rsi) < 2:
+        return "NONE"
+    recent_prices = [c["close"] for c in candles[-len(recent_rsi):]]
+    if recent_prices[-1] < recent_prices[0] and recent_rsi[-1] > recent_rsi[0]:
         return "BULLISH DIVERGENCE"
-    if prices[-1] > prices[0] and rsis[-1] < rsis[0]:
+    if recent_prices[-1] > recent_prices[0] and recent_rsi[-1] < recent_rsi[0]:
         return "BEARISH DIVERGENCE"
     return "NONE"
 
@@ -491,10 +407,6 @@ def adx(c, n=14):
         dx.append(100*abs(pdi-mdi)/(pdi+mdi))
     return sum(dx[-n:])/n if len(dx) >= n else None
 
-# ============================================================
-# STRUCTURE
-# ============================================================
-
 def get_swings(c, n=30):
     if not c:
         return None, None
@@ -506,21 +418,6 @@ def market_structure(c):
         return "NEUTRAL"
     a = c[-20:-10]
     b = c[-10:]
-    ah = max(x["high"] for x in a)
-    bh = max(x["high"] for x in b)
-    al = min(x["low"] for x in a)
-    bl = min(x["low"] for x in b)
-    if bh > ah and bl > al:
-        return "BULLISH"
-    if bh < ah and bl < al:
-        return "BEARISH"
-    return "NEUTRAL"
-
-def market_structure_4h(c4h):
-    if len(c4h) < 20:
-        return "NEUTRAL"
-    a = c4h[-20:-10]
-    b = c4h[-10:]
     ah = max(x["high"] for x in a)
     bh = max(x["high"] for x in b)
     al = min(x["low"] for x in a)
@@ -618,4 +515,277 @@ def calculate_bias(e20, e50, structure, h1, trend_4h, rv, divergence):
     if buy >= sell+2:
         return "BUY", buy, sell
     if sell >= buy+2:
-        
+        return "SELL", buy, sell
+    return "NEUTRAL", buy, sell
+
+def build_zone(price, av, ref=None):
+    av = av if av and av > 0 else price * 0.005
+    ref = ref if ref is not None else price
+    z = av * 0.20
+    return ref-z, ref+z
+
+def analyze_asset(asset):
+    if asset == "gold":
+        opened, reason = gold_market_status()
+    else:
+        opened, reason = btc_market_status()
+    if not opened:
+        return {"market_open": False, "market_reason": reason, "asset": asset}
+
+    c15, s15 = get_candles(asset, "15m", 20)
+    c1h, s1h = get_candles(asset, "1h", 20)
+    c4h, s4h = get_candles(asset, "4h", 20)
+
+    if len(c15) < 20:
+        return None
+
+    closes = [x["close"] for x in c15]
+
+    if asset == "gold":
+        real_price, _ = get_real_gold_price()
+        price = real_price if real_price else closes[-1]
+    else:
+        price = closes[-1]
+
+    e20 = ema(closes, 20) if len(closes) >= 20 else None
+    e50 = ema(closes, 50) if len(closes) >= 50 else None
+    rv = rsi(closes)
+    av = atr(c15)
+    ax = adx(c15)
+    divergence = rsi_divergence(c15)
+    structure = market_structure(c15)
+    slw_raw, shw_raw = get_swings(c15, 30)
+
+    scale = (real_price / closes[-1]) if (asset == "gold" and real_price and closes[-1] > 0) else 1.0
+    slw = slw_raw * scale if slw_raw else None
+    shw = shw_raw * scale if shw_raw else None
+
+    h1trend = "NEUTRAL"
+    if len(c1h) >= 20:
+        hc = [x["close"] for x in c1h]
+        a = ema(hc, 20) if len(hc) >= 20 else None
+        b = ema(hc, 50) if len(hc) >= 50 else None
+        if a is not None and b is not None:
+            h1trend = "BULLISH" if a > b else "BEARISH" if a < b else "NEUTRAL"
+
+    trend_4h = "NEUTRAL"
+    if len(c4h) >= 20:
+        hc4 = [x["close"] for x in c4h]
+        a4 = ema(hc4, 20) if len(hc4) >= 20 else None
+        b4 = ema(hc4, 50) if len(hc4) >= 50 else None
+        if a4 is not None and b4 is not None:
+            trend_4h = "BULLISH" if a4 > b4 else "BEARISH" if a4 < b4 else "NEUTRAL"
+
+    news = get_forex_news()
+    news_risk, news_msg = check_news_risk(news)
+
+    bias, bp, sp = calculate_bias(e20, e50, structure, h1trend, trend_4h, rv, divergence)
+    liq, lprice = liquidity_sweep(c15, 20)
+    candle = candle_confirmation(c15)
+    bos, bosprice = detect_bos(c15)
+    retest, retprice = detect_retest(c15, bos, bosprice, av)
+
+    if asset == "gold":
+        if lprice:
+            lprice = lprice * scale
+        if bosprice:
+            bosprice = bosprice * scale
+
+    score = 0
+    if bias == "BUY":
+        if liq == "BULLISH SWEEP":
+            score += 25
+        if candle in ("BULLISH ENGULFING", "BULLISH CANDLE"):
+            score += 20
+        if bos == "BULLISH BOS":
+            score += 25
+        if retest == "BULLISH RETEST":
+            score += 30
+    elif bias == "SELL":
+        if liq == "BEARISH SWEEP":
+            score += 25
+        if candle in ("BEARISH ENGULFING", "BEARISH CANDLE"):
+            score += 20
+        if bos == "BEARISH BOS":
+            score += 25
+        if retest == "BEARISH RETEST":
+            score += 30
+
+    direction = "WAIT"
+    if not news_risk:
+        if bias == "BUY":
+            if liq == "BULLISH SWEEP" and candle in ("BULLISH ENGULFING", "BULLISH CANDLE") and bos == "BULLISH BOS" and retest == "BULLISH RETEST":
+                direction = "BUY"
+            elif score >= 75 and candle in ("BULLISH ENGULFING", "BULLISH CANDLE") and bos == "BULLISH BOS" and retest == "BULLISH RETEST":
+                direction = "BUY"
+        elif bias == "SELL":
+            if liq == "BEARISH SWEEP" and candle in ("BEARISH ENGULFING", "BEARISH CANDLE") and bos == "BEARISH BOS" and retest == "BEARISH RETEST":
+                direction = "SELL"
+            elif score >= 75 and candle in ("BEARISH ENGULFING", "BEARISH CANDLE") and bos == "BEARISH BOS" and retest == "BEARISH RETEST":
+                direction = "SELL"
+
+    if direction in ("BUY", "SELL"):
+        confidence = min(95, int(55 + score * 0.40))
+    else:
+        confidence = min(59, int(40 + abs(bp-sp)*4 + score * 0.10))
+
+    ref = bosprice if bosprice is not None else lprice
+    safe_av = av if av else price * 0.005
+    safe_av = safe_av * scale if asset == "gold" and scale != 1.0 else safe_av
+    zl, zh = build_zone(price, safe_av, ref if ref else price)
+
+    sl = tp1 = tp2 = rr1 = rr2 = None
+    if direction == "BUY":
+        protect = lprice if lprice else (slw if slw else price * 0.99)
+        sl = protect - safe_av * 0.30
+        risk = max(price - sl, safe_av)
+        tp1 = price + risk * 1.5
+        tp2 = price + risk * 2.5
+        rr1 = round((tp1 - price) / risk, 1) if risk > 0 else 0
+        rr2 = round((tp2 - price) / risk, 1) if risk > 0 else 0
+    elif direction == "SELL":
+        protect = lprice if lprice else (shw if shw else price * 1.01)
+        sl = protect + safe_av * 0.30
+        risk = max(sl - price, safe_av)
+        tp1 = price - risk * 1.5
+        tp2 = price - risk * 2.5
+        rr1 = round((price - tp1) / risk, 1) if risk > 0 else 0
+        rr2 = round((price - tp2) / risk, 1) if risk > 0 else 0
+
+    save_history(asset, direction, price, score)
+
+    missing = []
+    if direction == "WAIT":
+        if bias == "BUY":
+            if candle not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
+                missing.append("Bullish candle")
+            if bos != "BULLISH BOS":
+                missing.append("Bullish BOS")
+            if retest != "BULLISH RETEST":
+                missing.append("Retest")
+            if liq != "BULLISH SWEEP":
+                missing.append("Liquidity sweep (optional)")
+        elif bias == "SELL":
+            if candle not in ("BEARISH ENGULFING", "BEARISH CANDLE"):
+                missing.append("Bearish candle")
+            if bos != "BEARISH BOS":
+                missing.append("Bearish BOS")
+            if retest != "BEARISH RETEST":
+                missing.append("Retest")
+            if liq != "BEARISH SWEEP":
+                missing.append("Liquidity sweep (optional)")
+        else:
+            missing.append("Directional bias")
+
+    reasons = []
+    if e20 and e50:
+        reasons.append("EMA20 di atas EMA50" if e20 > e50 else "EMA20 di bawah EMA50")
+    if structure != "NEUTRAL":
+        reasons.append("Structure 15M " + structure)
+    if h1trend != "NEUTRAL":
+        reasons.append("Trend 1H " + h1trend)
+    if trend_4h != "NEUTRAL":
+        reasons.append("Trend 4H " + trend_4h)
+    if divergence != "NONE":
+        reasons.append(divergence)
+    if liq != "NONE":
+        reasons.append(liq)
+    if candle != "NONE":
+        reasons.append(candle)
+    if bos != "NONE":
+        reasons.append(bos)
+    if retest != "NONE":
+        reasons.append(retest)
+    if news_risk:
+        reasons.append("NEWS RISK - " + news_msg)
+    if not reasons:
+        reasons.append("Belum ada confirmation")
+
+    return {
+        "market_open": True, "price": price, "direction": direction, "bias": bias,
+        "confidence": confidence, "trigger_score": score, "structure": structure,
+        "h1_trend": h1trend, "trend_4h": trend_4h,
+        "rsi": rv if rv is not None else 0.0,
+        "adx": ax if ax is not None else 0.0,
+        "atr": safe_av, "divergence": divergence,
+        "liquidity": liq, "liquidity_price": lprice,
+        "candle_confirmation": candle, "bos": bos,
+        "bos_price": bosprice, "retest": retest,
+        "entry_low": zl, "entry_high": zh,
+        "swing_low": slw if slw else price * 0.99,
+        "swing_high": shw if shw else price * 1.01,
+        "sl": sl, "tp1": tp1, "tp2": tp2,
+        "rr1": rr1, "rr2": rr2,
+        "news_risk": news_risk, "news_msg": news_msg,
+        "session": get_session_name(),
+        "reasons": reasons, "missing": missing,
+        "source_15m": s15 or "N/A", "source_1h": s1h or "N/A",
+        "source_4h": s4h or "N/A"
+    }
+
+def fmt(val):
+    if val is None:
+        return "N/A"
+    return "{:,.2f}".format(val)
+
+def format_closed(asset, result):
+    now = datetime.now(MY_TZ)
+    name = "GOLD XAUUSD" if asset == "gold" else "BITCOIN BTC"
+    return "🔴 *" + name + " MARKET CLOSED*\n\n🕐 `" + now.strftime("%d/%m/%Y %H:%M") + "`\n📌 Status: `" + result.get("market_reason", "CLOSED") + "`"
+
+def format_signal(asset, r):
+    if r is None:
+        return "❌ *DATA GAGAL*\n\nSemua sumber data tidak tersedia.\n🔄 Cuba semula selepas beberapa saat."
+    if not r.get("market_open", True):
+        return format_closed(asset, r)
+
+    name = "GOLD (XAUUSD)" if asset == "gold" else "BITCOIN (BTC)"
+    emoji = "🥇" if asset == "gold" else "₿"
+    d = r["direction"]
+    b = r["bias"]
+    now = datetime.now(MY_TZ).strftime("%d/%m/%Y %H:%M")
+
+    msg = emoji + " *" + name + " SIGNAL V8.0*\n"
+    msg += "🕐 `" + now + "` | 🌍 `" + r["session"] + "`\n\n"
+    msg += "💰 Harga: `$" + fmt(r["price"]) + "`\n"
+
+    if r["news_risk"]:
+        msg += "\n⚠️ *NEWS ALERT*\n`" + r["news_msg"] + "`\n"
+
+    if d == "BUY":
+        msg += "\n🟢 *SIGNAL: BUY*\n🚀 Entry trigger aktif\n"
+    elif d == "SELL":
+        msg += "\n🔴 *SIGNAL: SELL*\n🚀 Entry trigger aktif\n"
+    else:
+        msg += "\n🟡 *SIGNAL: WAIT*\n⏳ Tunggu confirmation\n"
+
+    msg += "\n🧭 *Bias:* `" + b + "`\n"
+    msg += "💯 *Confidence:* `" + str(r["confidence"]) + "%`\n"
+    msg += "🎯 *Score:* `" + str(r["trigger_score"]) + "/100`\n"
+    msg += "📐 *Structure 15M:* `" + r["structure"] + "`\n"
+    msg += "🕐 *Trend 1H:* `" + r["h1_trend"] + "`\n"
+    msg += "📊 *Trend 4H:* `" + r["trend_4h"] + "`\n"
+    msg += "📈 *RSI:* `" + "{:.1f}".format(r["rsi"]) + "`\n"
+    msg += "📉 *ADX:* `" + "{:.1f}".format(r["adx"]) + "`\n"
+    msg += "🔀 *Divergence:* `" + r["divergence"] + "`\n\n"
+
+    msg += "💧 *LIQUIDITY*\n`" + r["liquidity"] + "`\n\n"
+    msg += "🕯 *CANDLE*\n`" + r["candle_confirmation"] + "`\n\n"
+    msg += "📐 *BOS*\n`" + r["bos"] + "`\n\n"
+    msg += "🔄 *RETEST*\n`" + r["retest"] + "`\n\n"
+
+    if d == "BUY":
+        trig = "🟢 BUY TRIGGER ACTIVE"
+    elif d == "SELL":
+        trig = "🔴 SELL TRIGGER ACTIVE"
+    elif b == "BUY":
+        if r["candle_confirmation"] not in ("BULLISH ENGULFING", "BULLISH CANDLE"):
+            trig = "🟡 WAIT FOR BULLISH CANDLE"
+        elif r["bos"] != "BULLISH BOS":
+            trig = "🟡 WAIT FOR BULLISH BOS"
+        elif r["retest"] != "BULLISH RETEST":
+            trig = "🟡 WAIT FOR BULLISH RETEST"
+        else:
+            trig = "🟡 WAIT FOR CONFIRMATION"
+    elif b == "SELL":
+        if r["candle_
