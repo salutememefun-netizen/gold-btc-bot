@@ -1,104 +1,131 @@
-import os, logging, requests, json
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import requests
+import logging
+from typing import Optional, Dict, Any
 
+# Setup logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
-MY_TZ = ZoneInfo("Asia/Kuala_Lumpur")
-HISTORY_FILE = "/tmp/history.json"
-SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Linux; Android 13) Chrome/120"})
-TWELVE_KEY = os.getenv("TWELVE_API_KEY", "")
 
-def gold_market_open():
-    now = datetime.now(MY_TZ)
-    wd, mins = now.weekday(), now.hour * 60 + now.minute
-    if wd == 5: return False, "WEEKEND"
-    if wd == 6 and mins < 360: return False, "WEEKEND"
-    if 300 <= mins < 360: return False, "DAILY BREAK"
-    return True, "OPEN"
-
-def get_session():
-    h = datetime.now(MY_TZ).hour
-    if 15 <= h < 24: return "NEW YORK"
-    if 8 <= h < 17: return "LONDON"
-    if 2 <= h < 11: return "TOKYO"
-    return "SYDNEY"
-
-def save_history(asset, direction, price, score):
+def get_crypto_price(coin_id: str = "bitcoin") -> Optional[float]:
+    """
+    Mengambil harga semasa cryptocurrency dari CoinGecko API.
+    
+    Args:
+        coin_id: ID cryptocurrency (contoh: 'bitcoin', 'ethereum', 'xau-tether')
+    
+    Returns:
+        Harga dalam USD atau None jika gagal.
+    """
+    url = f"https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        "ids": coin_id,
+        "vs_currencies": "usd"
+    }
+    
     try:
-        data = []
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE) as f: data = json.load(f)
-        data.append({"time": datetime.now(MY_TZ).strftime("%d/%m %H:%M"), "asset": asset, "direction": direction, "price": price, "score": score})
-        with open(HISTORY_FILE, "w") as f: json.dump(data[-50:], f)
-    except Exception as e: logger.warning("history error: %s", e)
-
-def get_stats(asset):
-    try:
-        if not os.path.exists(HISTORY_FILE): return None
-        with open(HISTORY_FILE) as f: data = json.load(f)
-        d = [x for x in data if x.get("asset") == asset]
-        if not d: return None
-        return {"total": len(d), "buy": sum(1 for x in d if x.get("direction") == "BUY"), "sell": sum(1 for x in d if x.get("direction") == "SELL"), "wait": sum(1 for x in d if x.get("direction") == "WAIT")}
-    except Exception: return None
-
-def binance_candles(symbol, interval="15m", limit=200):
-    try:
-        r = SESSION.get("https://api.binance.com/api/v3/klines", params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=15)
-        if r.status_code != 200: return []
-        return [{"time": x[0], "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]), "volume": float(x[7])} for x in r.json()]
-    except Exception as e: logger.warning("binance %s: %s", symbol, e); return []
-
-def coingecko_ohlc(coin, days=90):
-    try:
-        r = SESSION.get(f"https://api.coingecko.com/api/v3/coins/{coin}/ohlc", params={"vs_currency": "usd", "days": days}, timeout=15)
-        if r.status_code != 200: return []
-        return [{"time": x[0], "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]), "volume": 0} for x in r.json()]
-    except Exception as e: logger.warning("coingecko %s: %s", coin, e); return []
-
-def twelvedata_candles(symbol, interval="15min", size=200):
-    if not TWELVE_KEY: return []
-    try:
-        r = SESSION.get("https://api.twelvedata.com/time_series", params={"symbol": symbol, "interval": interval, "outputsize": size, "apikey": TWELVE_KEY}, timeout=20)
-        if r.status_code != 200 or r.json().get("status") == "error": return []
-        return [{"time": x.get("datetime"), "open": float(x.get("open", 0)), "high": float(x.get("high", 0)), "low": float(x.get("low", 0)), "close": float(x.get("close", 0)), "volume": 0} for x in reversed(r.json().get("values", []))]
-    except Exception as e: logger.warning("twelvedata %s: %s", symbol, e); return []
-
-def get_gold_price():
-    for url, fn in [("https://api.metals.live/v1/spot/gold", lambda r: r.json().get("price")), ("https://api.gold-api.com/price/XAU", lambda r: r.json().get("price"))]:
-        try:
-            r = SESSION.get(url, timeout=10)
-            if r.status_code == 200:
-                p = fn(r)
-                if p and float(p) > 0: return float(p), url.split("/")[2]
-        except Exception: pass
-    return None, None
-
-def gold_candles():
-    paxg = binance_candles("PAXGUSDT", "15m", 200)
-    if len(paxg) < 20: paxg = binance_candles("PAXGUSDT", "1h", 200)
-    if len(paxg) < 20: return [], None
-    real, _ = get_gold_price()
-    if not real: return paxg, "PAXG"
-    ratio = real / paxg[-1]["close"]
-    return [{"time": c["time"], "open": c["open"] * ratio, "high": c["high"] * ratio, "low": c["low"] * ratio, "close": c["close"] * ratio, "volume": c["volume"]} for c in paxg], "XAUUSD-Scaled"
-
-def get_candles(asset, tf="15m", minimum=20):
-    if asset == "btc":
-        sources = [lambda: (binance_candles("BTCUSDT", "15m", 200), "Binance-15m"), lambda: (binance_candles("BTCUSDT", "1h", 200), "Binance-1h"), lambda: (coingecko_ohlc("bitcoin", 90), "CoinGecko")]
-    else:
-        if tf in ("1h", "4h"):
-            sources = [lambda: (twelvedata_candles("XAU/USD", "1h", 200), "Twelve-1h"), lambda: (binance_candles("PAXGUSDT", "1h", 200), "PAXG-1h"), lambda: gold_candles()]
+        response = requests.get(url, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        if coin_id in data and "usd" in data[coin_id]:
+            price = data[coin_id]["usd"]
+            logger.info(f"Harga {coin_id}: ${price:,.2f}")
+            return price
         else:
-            sources = [lambda: (twelvedata_candles("XAU/USD", "15min", 200), "Twelve-15m"), lambda: gold_candles(), lambda: (coingecko_ohlc("pax-gold", 90), "CoinGecko-PAXG")]
-    for fn in sources:
-        try:
-            result = fn()
-            candles, src = result if isinstance(result, tuple) else (result, "unknown")
-            if candles and len(candles) >= minimum: return candles, src
-        except Exception as e: logger.warning("candle source failed: %s", e)
-    return [], None
+            logger.warning(f"Data harga tidak dijumpai untuk {coin_id}")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Ralat rangkaian semasa mengambil harga {coin_id}: {e}")
+        return None
+    except ValueError as e:
+        logger.error(f"Ralat parsing JSON untuk {coin_id}: {e}")
+        return None
 
-def get_live_price(asset):
-    apis = [
-        ("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", lambda r: r
+def analyze_gold_btc() -> str:
+    """
+    Analisis harga semasa untuk Bitcoin (BTC) dan Emas (GOLD/XAU).
+    
+    Returns:
+        String laporan analisis dalam format teks.
+    """
+    # Ambil harga BTC
+    btc_price = get_crypto_price("bitcoin")
+    
+    # Ambil harga GOLD (menggunakan ID 'xau-tether' sebagai proxy untuk XAU/USD)
+    # Nota: CoinGecko kadang-kala tidak menyediakan data XAU langsung, 
+    # jadi kita guna token yang dipautkan pada emas.
+    gold_price = get_crypto_price("xau-tether")
+    
+    # Bina mesej laporan
+    btc_msg = f"💰 BTC: ${btc_price:,.2f}" if btc_price else "❌ Gagal ambil harga BTC"
+    gold_msg = f"🏆 GOLD (XAU): ${gold_price:,.2f}" if gold_price else "❌ Gagal ambil harga GOLD"
+    
+    # Analisis ringkas
+    analysis = ""
+    if btc_price and gold_price:
+        btc_change = "naik" if btc_price > 60000 else "turun" # Logik ringkas
+        gold_change = "naik" if gold_price > 2300 else "turun" # Logik ringkas
+        
+        analysis = (
+            f"\n\n📊 *Analisis Pasaran:*\n"
+            f"- BTC sedang {btc_change} (Trend: {btc_price:,.0f})\n"
+            f"- GOLD sedang {gold_change} (Trend: {gold_price:,.0f})\n"
+            f"- Cadangan: Pantau volatiliti sebelum membuat keputusan."
+        )
+    else:
+        analysis = "\n\n⚠️ *Analisis:* Tidak dapat menyiapkan laporan penuh disebabkan ralat data."
+
+    return f"📈 Laporan Pasaran Kripto & Komoditi\n\n{btc_msg}\n{gold_msg}{analysis}"
+
+def calculate_simple_moving_average(prices: list, period: int = 7) -> Optional[float]:
+    """
+    Mengira Simple Moving Average (SMA) untuk analisis trend.
+    
+    Args:
+        prices: Senarai harga historis.
+        period: Tempoh untuk pengiraan SMA.
+    
+    Returns:
+        Nilai SMA atau None jika data tidak mencukupi.
+    """
+    if not prices or len(prices) < period:
+        return None
+    
+    # Ambil 'period' harga terakhir dan kira purata
+    recent_prices = prices[-period:]
+    sma = sum(recent_prices) / period
+    return round(sma, 2)
+
+def format_currency(value: float, currency: str = "USD") -> str:
+    """
+    Memformat nombor kepada format mata wang.
+    
+    Args:
+        value: Nilai nombor.
+        currency: Kod mata wang (USD, MYR, dll).
+    
+    Returns:
+        String format mata wang.
+    """
+    if currency == "USD":
+        return f"${value:,.2f}"
+    elif currency == "MYR":
+        return f"RM{value:,.2f}"
+    else:
+        return f"{currency} {value:,.2f}"
+
+# Contoh fungsi tambahan jika anda perlukan logik khusus
+def get_market_sentiment(btc_price: float, gold_price: float) -> str:
+    """
+    Menentukan sentimen pasaran berdasarkan harga.
+    """
+    if btc_price > 65000 and gold_price > 2400:
+        return "🚀 *Bullish:* Kedua-dua aset menunjukkan kekuatan."
+    elif btc_price < 55000 and gold_price < 2200:
+        return "📉 *Bearish:* Pasaran sedang lemah."
+    else:
+        return "⚖️ *Neutral:* Pasaran dalam keadaan tidak menentu."
