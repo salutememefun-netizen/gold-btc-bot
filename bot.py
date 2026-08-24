@@ -1,165 +1,70 @@
+#!/usr/bin/env python3
+"""
+Script alert untuk Railway Cron.
+Jalankan setiap 1 jam.
+"""
+
 import os
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import asyncio
+from telegram import Bot
 from dotenv import load_dotenv
+
+# Import dari helpers
 from helpers import (
-    analyze_gold_btc, get_btc_price, get_gold_price, 
-    generate_smart_signal, add_subscriber_db, remove_subscriber_db, init_db
+    generate_ultimate_signal,
+    get_binance_candles,
+    get_all_subscribers,
+    init_db
 )
-from chart import get_btc_chart, get_gold_chart
 
 load_dotenv()
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-if not TOKEN:
-    logging.critical("TELEGRAM_BOT_TOKEN tidak dijumpai!")
-    exit(1)
+async def send_alerts():
+    """Hantar alert Ultimate ke semua subscriber"""
+    if not TOKEN:
+        print("ERROR: TELEGRAM_BOT_TOKEN tidak dijumpai!")
+        return
 
-# Initialize database
-init_db()
+    # Initialize DB
+    init_db()
+    
+    # Dapatkan subscriber
+    subscribers = get_all_subscribers()
+    if not subscribers:
+        print("Tiada subscriber.")
+        return
 
-def get_main_menu():
-    keyboard = [
-        [
-            InlineKeyboardButton("🟢 Signal BTC", callback_data='sig_btc'),
-            InlineKeyboardButton("🏆 Signal GOLD", callback_data='sig_gold')
-        ],
-        [
-            InlineKeyboardButton("📊 Laporan Penuh", callback_data='full_report')
-        ],
-        [
-            InlineKeyboardButton("📈 Carta BTC", callback_data='chart_btc'),
-            InlineKeyboardButton("📈 Carta GOLD", callback_data='chart_gold')
-        ],
-        [
-            InlineKeyboardButton("🔔 Subscribe Auto-Alert", callback_data='sub_alert'),
-            InlineKeyboardButton("🔕 Unsubscribe", callback_data='unsub_alert')
-        ],
-        [
-            InlineKeyboardButton("🧪 Test Alert (Manual)", callback_data='test_alert')
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    print(f"Mengirim alert ke {len(subscribers)} subscriber...")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome = (
-        "🤖 *Bot Signal PRO: Smart Zones*\n\n"
-        "Analisis dengan RSI, EMA & Smart Zones.\n\n"
-        "📈 *Carta:* Lihat carta harga 30 hari.\n"
-        "🔔 *Auto-Alert:* Subscribe untuk laporan setiap 1 jam!\n"
-        "🧪 *Test:* Tekan 'Test Alert' untuk test sekarang."
-    )
-    await update.message.reply_text(welcome, parse_mode='Markdown', reply_markup=get_main_menu())
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-
-    if query.data == 'sig_btc':
-        await query.edit_message_text("🔄 Mengira BTC...")
-        price = get_btc_price()
-        msg = generate_smart_signal("BTC", price) if price else "❌ Gagal."
-        await query.edit_message_text(msg, parse_mode='Markdown')
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
-    elif query.data == 'sig_gold':
-        await query.edit_message_text("🔄 Mengira GOLD...")
-        price = get_gold_price()
-        msg = generate_smart_signal("GOLD", price) if price else "❌ Gagal."
-        await query.edit_message_text(msg, parse_mode='Markdown')
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
-    elif query.data == 'full_report':
-        await query.edit_message_text("🔄 Analisis...")
-        msg = analyze_gold_btc()
-        await query.edit_message_text(msg, parse_mode='Markdown')
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
-    elif query.data == 'chart_btc':
-        await query.edit_message_text("📈 Membuat carta BTC...")
+    # Dapatkan signal BTC (sebagai contoh utama)
+    candles = get_binance_candles("BTC", "1h", 50)
+    message = "⚠️ Data tidak tersedia."
+    
+    if candles:
+        price = candles[-1]["close"]
+        message = generate_ultimate_signal("BTC", price)
+    
+    # Hantar ke semua subscriber
+    bot = Bot(token=TOKEN)
+    success = 0
+    failed = 0
+    
+    for chat_id in subscribers:
         try:
-            chart_img = get_btc_chart()
-            if chart_img:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=chart_img,
-                    caption="📈 *Carta BTC (30 Hari Terakhir)*",
-                    parse_mode='Markdown'
-                )
-                await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-            else:
-                await context.bot.send_message(chat_id=chat_id, text="❌ Gagal buat carta.", reply_markup=get_main_menu())
-        except Exception as e:
-            logging.error(f"Ralat carta BTC: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Ralat: {e}", reply_markup=get_main_menu())
-
-    elif query.data == 'chart_gold':
-        await query.edit_message_text("📈 Membuat carta GOLD...")
-        try:
-            chart_img = get_gold_chart()
-            if chart_img:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=chart_img,
-                    caption="📈 *Carta GOLD (30 Hari Terakhir)*",
-                    parse_mode='Markdown'
-                )
-                await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-            else:
-                await context.bot.send_message(chat_id=chat_id, text="❌ Gagal buat carta.", reply_markup=get_main_menu())
-        except Exception as e:
-            logging.error(f"Ralat carta GOLD: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Ralat: {e}", reply_markup=get_main_menu())
-
-    elif query.data == 'sub_alert':
-        if add_subscriber_db(chat_id):
-            await query.edit_message_text("✅ *Disubscribe!*\nAlert setiap 1 jam.", parse_mode='Markdown')
-        else:
-            await query.edit_message_text("❌ Ralat sambungan DB. Cuba lagi.", parse_mode='Markdown')
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
-    elif query.data == 'unsub_alert':
-        if remove_subscriber_db(chat_id):
-            await query.edit_message_text("❌ *Unsubscribe!*\nAlert dihentikan.", parse_mode='Markdown')
-        else:
-            await query.edit_message_text("❌ Ralat. Cuba lagi.", parse_mode='Markdown')
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
-    elif query.data == 'test_alert':
-        await query.edit_message_text("🧪 *Test Alert:*\nMenghantar test message...")
-        try:
-            from alert import send_alerts
-            import asyncio
-            await send_alerts()
-            await context.bot.send_message(
+            await bot.send_message(
                 chat_id=chat_id,
-                text="✅ *Test Berjaya!*\nAlert dihantar ke semua subscriber.\nCheck Telegram anda sekarang!",
+                text="⏰ *ALERT ULTIMATE (Setiap 1 Jam)*\n\n" + message,
                 parse_mode='Markdown'
             )
+            success += 1
+            print(f"✅ Hantar ke {chat_id}")
         except Exception as e:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"❌ *Test Gagal:*\n{str(e)}",
-                parse_mode='Markdown'
-            )
-        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
-
-def main():
-    logging.info("Bot PRO bermula...")
-    application = Application.builder().token(TOKEN).build()
+            print(f"❌ Gagal ke {chat_id}: {e}")
+            failed += 1
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    print(f"Siap! Success: {success}, Failed: {failed}")
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(send_alerts())
