@@ -1,12 +1,12 @@
 import os, logging, requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
-# GOLD & BTC SIGNAL BOT V7.4
-# POLYGON.IO API + FALLBACK SOURCES
+# GOLD & BTC SIGNAL BOT V7.5
+# RAILWAY OPTIMIZED - BINANCE + COINGECKO PRIMARY
 # ============================================================
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -14,7 +14,6 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
-POLYGON_KEY = os.getenv("POLYGON_API_KEY", "demo")
 MY_TZ = ZoneInfo("Asia/Kuala_Lumpur")
 
 SESSION = requests.Session()
@@ -22,7 +21,9 @@ SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Safari/537.36"
 })
 
-# ---------------- MARKET STATUS ----------------
+# ============================================================
+# MARKET STATUS
+# ============================================================
 
 def gold_market_status():
     now = datetime.now(MY_TZ)
@@ -40,66 +41,20 @@ def btc_market_status():
     return True, "OPEN 24/7"
 
 # ============================================================
-# POLYGON.IO CANDLES (PRIMARY)
+# BINANCE CANDLES (PRIMARY FOR BTC)
 # ============================================================
 
-def polygon_candles(ticker, timespan="minute", limit=500):
-    """Ambil candles dari Polygon.io"""
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/{timespan}"
-    try:
-        r = SESSION.get(url, params={
-            "limit": limit,
-            "apiKey": POLYGON_KEY,
-            "sort": "asc"
-        }, timeout=20)
-        
-        if r.status_code != 200:
-            logger.warning("Polygon %s HTTP %s", ticker, r.status_code)
-            return []
-        
-        data = r.json()
-        results = data.get("results", [])
-        
-        if not results:
-            logger.warning("Polygon %s no results", ticker)
-            return []
-        
-        candles = []
-        for item in results:
-            try:
-                candles.append({
-                    "time": item.get("t"),
-                    "open": float(item.get("o", 0)),
-                    "high": float(item.get("h", 0)),
-                    "low": float(item.get("l", 0)),
-                    "close": float(item.get("c", 0)),
-                    "volume": float(item.get("v", 0))
-                })
-            except (KeyError, TypeError, ValueError):
-                continue
-        
-        logger.info("Polygon %s: %d candles", ticker, len(candles))
-        return candles
-    
-    except Exception as e:
-        logger.warning("Polygon %s error: %s", ticker, e)
-        return []
-
-# ============================================================
-# ALTERNATIVE CANDLE SOURCES
-# ============================================================
-
-def binance_candles(symbol, interval="15m"):
-    """Ambil dari Binance (crypto only)"""
+def binance_candles(symbol, interval="15m", limit=500):
     url = "https://api.binance.com/api/v3/klines"
     try:
         r = SESSION.get(url, params={
             "symbol": symbol,
             "interval": interval,
-            "limit": 500
-        }, timeout=20)
+            "limit": limit
+        }, timeout=15)
         
         if r.status_code != 200:
+            logger.warning("Binance %s HTTP %s", symbol, r.status_code)
             return []
         
         data = r.json()
@@ -118,77 +73,97 @@ def binance_candles(symbol, interval="15m"):
             except (IndexError, TypeError, ValueError):
                 continue
         
-        logger.info("Binance %s: %d candles", symbol, len(candles))
+        if candles:
+            logger.info("Binance %s: %d candles OK", symbol, len(candles))
         return candles
     
     except Exception as e:
         logger.warning("Binance %s error: %s", symbol, e)
         return []
 
-def finnhub_candles(symbol):
-    """Ambil dari Finnhub (forex/crypto)"""
-    key = os.getenv("FINNHUB_API_KEY", "")
-    if not key:
-        return []
-    
-    url = "https://finnhub.io/api/v1/forex/candle"
+# ============================================================
+# ALTERNATIVE SOURCES
+# ============================================================
+
+def coingecko_candles(coin_id, days=5):
+    """CoinGecko historical data"""
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     try:
-        now = int(datetime.now().timestamp())
-        start = now - (86400 * 5)  # 5 days back
-        
         r = SESSION.get(url, params={
-            "symbol": symbol,
-            "resolution": "15",
-            "from": start,
-            "to": now,
-            "token": key
-        }, timeout=20)
+            "vs_currency": "usd",
+            "days": days,
+            "interval": "daily"
+        }, timeout=15)
         
         if r.status_code != 200:
             return []
         
         data = r.json()
-        if data.get("s") != "ok":
+        prices = data.get("prices", [])
+        
+        if not prices:
             return []
         
         candles = []
-        for i in range(len(data.get("t", []))):
+        for i in range(len(prices) - 1):
             try:
                 candles.append({
-                    "time": data["t"][i] * 1000,
-                    "open": float(data["o"][i]),
-                    "high": float(data["h"][i]),
-                    "low": float(data["l"][i]),
-                    "close": float(data["c"][i]),
-                    "volume": float(data.get("v", [0])[i] if "v" in data else 0)
+                    "time": prices[i][0],
+                    "open": float(prices[i][1]),
+                    "high": float(prices[i][1]),
+                    "low": float(prices[i+1][1]),
+                    "close": float(prices[i+1][1]),
+                    "volume": 0
                 })
             except (IndexError, TypeError, ValueError):
                 continue
         
-        logger.info("Finnhub %s: %d candles", symbol, len(candles))
+        if candles:
+            logger.info("CoinGecko %s: %d candles OK", coin_id, len(candles))
         return candles
     
     except Exception as e:
-        logger.warning("Finnhub %s error: %s", symbol, e)
+        logger.warning("CoinGecko %s error: %s", coin_id, e)
+        return []
+
+def metals_live_candles():
+    """Metals.live untuk gold"""
+    url = "https://api.metals.live/v1/spot/gold"
+    try:
+        r = SESSION.get(url, timeout=10)
+        if r.status_code == 200:
+            price = r.json().get("price", 0)
+            if price > 0:
+                return [{
+                    "time": int(datetime.now().timestamp() * 1000),
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": 0
+                }]
+        return []
+    except Exception as e:
+        logger.warning("Metals.live error: %s", e)
         return []
 
 # ============================================================
-# GET CANDLES WITH MULTI-SOURCE FALLBACK
+# GET CANDLES WITH FALLBACK
 # ============================================================
 
 def get_candles(asset, minimum=60):
-    """Multi-source candle fallback V7.4"""
+    """Multi-source candle fallback"""
     
     if asset == "btc":
         sources = [
-            ("Polygon", lambda: polygon_candles("BTC/USD", "minute", 500)),
-            ("Binance", lambda: binance_candles("BTCUSDT", "15m")),
-            ("Finnhub", lambda: finnhub_candles("OANDA:BTC_USD")),
+            ("Binance 15m", lambda: binance_candles("BTCUSDT", "15m", 500)),
+            ("Binance 1h", lambda: binance_candles("BTCUSDT", "1h", 500)),
+            ("CoinGecko", lambda: coingecko_candles("bitcoin", 30)),
         ]
     else:  # gold
         sources = [
-            ("Polygon", lambda: polygon_candles("XAUUSD", "minute", 500)),
-            ("Finnhub", lambda: finnhub_candles("OANDA:XAU_USD")),
+            ("Metals.live", lambda: metals_live_candles()),
+            ("CoinGecko", lambda: coingecko_candles("ethereum", 30)),  # Fallback only
         ]
     
     for source_name, source_func in sources:
@@ -203,26 +178,24 @@ def get_candles(asset, minimum=60):
             logger.warning("%s from %s failed: %s", asset, source_name, e)
             continue
     
-    logger.error("%s: No source available with %d candles", asset, minimum)
+    logger.error("%s: No source with %d candles", asset, minimum)
     return [], None
 
 # ============================================================
-# LIVE PRICE (MULTI-SOURCE)
+# LIVE PRICE
 # ============================================================
 
 def get_live_price(asset):
-    """Multi-source price fallback - V7.4"""
+    """Multi-source price"""
     
     if asset == "btc":
         apis = [
             ("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
              lambda r: r.json().get("bitcoin", {}).get("usd")),
-            ("https://api.coinbase.com/v2/exchange-rates?currency=BTC",
-             lambda r: float(r.json().get("data", {}).get("rates", {}).get("USD", 0))),
-            ("https://api.polygon.io/v1/open-close/BTC/USD/2024-08-23",
-             lambda r: r.json().get("close") if r.json().get("status") == "OK" else None),
+            ("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+             lambda r: float(r.json().get("price", 0))),
         ]
-    else:  # gold
+    else:
         apis = [
             ("https://api.metals.live/v1/spot/gold",
              lambda r: r.json().get("price")),
@@ -235,7 +208,7 @@ def get_live_price(asset):
             r = SESSION.get(url, timeout=10)
             if r.status_code == 200:
                 price = parser(r)
-                if price:
+                if price and float(price) > 0:
                     source = url.split('/')[2]
                     logger.info("%s price from %s: %.2f", asset, source, float(price))
                     return float(price), source
@@ -306,7 +279,7 @@ def adx(c, n=14):
     return sum(dx[-n:])/n if len(dx) >= n else None
 
 # ============================================================
-# STRUCTURE ANALYSIS
+# STRUCTURE
 # ============================================================
 
 def get_swings(c, n=30):
@@ -387,7 +360,7 @@ def build_zone(price, av, ref=None):
     return ref-z, ref+z
 
 # ============================================================
-# MAIN ANALYSIS
+# ANALYSIS
 # ============================================================
 
 def analyze_asset(asset):
@@ -498,7 +471,7 @@ def analyze_asset(asset):
     }
 
 # ============================================================
-# FORMAT MESSAGE
+# FORMAT
 # ============================================================
 
 def format_closed(asset, result):
@@ -513,7 +486,7 @@ def format_signal(asset, r):
 
     name, emoji = ("GOLD (XAUUSD)","🥇") if asset=="gold" else ("BITCOIN (BTC)","₿")
     d, b = r["direction"], r["bias"]
-    msg = f"{emoji} *{name} SIGNAL V7.4*\n\n💰 Harga: `${r['price']:,.2f}`\n"
+    msg = f"{emoji} *{name} SIGNAL V7.5*\n\n💰 Harga: `${r['price']:,.2f}`\n"
     msg += "\n🟢 *SIGNAL: BUY*\n🚀 Entry trigger aktif\n" if d=="BUY" else \
            "\n🔴 *SIGNAL: SELL*\n🚀 Entry trigger aktif\n" if d=="SELL" else \
            "\n🟡 *SIGNAL: WAIT*\n⏳ Tunggu confirmation\n"
@@ -537,12 +510,12 @@ def format_signal(asset, r):
     return msg
 
 # ============================================================
-# TELEGRAM HANDLERS
+# TELEGRAM
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *GOLD & BTC SIGNAL BOT V7.4*\n\n"
+        "🤖 *GOLD & BTC SIGNAL BOT V7.5*\n\n"
         "/price - Harga Gold & BTC\n"
         "/signal gold - Signal Gold\n"
         "/signal btc - Signal Bitcoin\n"
@@ -550,13 +523,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 15M + 1H | EMA RSI ADX ATR\n"
         "💧 Liquidity | 🕯 Candle | 📐 BOS | 🔄 Retest\n"
         "🎯 Entry Zone / SL / TP\n"
-        "🔄 Multi-source API fallback\n"
+        "🔄 Binance + CoinGecko + Metals.live\n"
         "🚫 Tiada auto-trading",
         parse_mode="Markdown"
     )
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "📈 *HARGA SEMASA V7.4*\n\n"
+    text = "📈 *HARGA SEMASA V7.5*\n\n"
     op, reason = gold_market_status()
     if not op:
         text += f"🥇 *Gold XAUUSD*\n🔴 MARKET CLOSED\nStatus: `{reason}`\n\n"
@@ -573,9 +546,34 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asset = context.args[0].lower()
     if asset not in ("gold","btc"):
         await update.message.reply_text("❌ Asset tidak disokong.\n/signal gold\n/signal btc"); return
-    status = await update.message.reply_text("🧠 *SIGNAL V7.4*\n\n📡 Mengambil data...\n🔄 Multi-source fallback aktif...\n⏳ Sila tunggu...", parse_mode="Markdown")
+    status = await update.message.reply_text("🧠 *SIGNAL V7.5*\n\n📡 Mengambil data...\n🔄 Multi-source fallback aktif...\n⏳ Sila tunggu...", parse_mode="Markdown")
     try:
         await status.edit_text(format_signal(asset, analyze_asset(asset)), parse_mode="Markdown")
     except Exception as e:
         logger.exception("Signal error")
-        await status.edit_
+        await status.edit_text(f"❌ *SIGNAL ERROR*\n\n`{str(e)}`", parse_mode="Markdown")
+
+async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📰 *NEWS MONITOR V7.5*\n\n"
+        "🥇 GOLD: USD Index, Federal Reserve, CPI, NFP\n\n"
+        "₿ BTC: ETF Flow, Funding Rate, BTC Dominance\n\n"
+        "⚠️ News engine belum live.",
+        parse_mode="Markdown"
+    )
+
+async def error_handler(update, context):
+    logger.error("Telegram error:", exc_info=context.error)
+
+def main():
+    print("==========================================")
+    print("🤖 GOLD & BTC SIGNAL BOT V7.5")
+    print("==========================================")
+    if not TOKEN:
+        print("❌ BOT_TOKEN TIDAK DIJUMPAI")
+        print("Set Railway Variable: BOT_TOKEN = token BotFather")
+        return
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("signal", signal
