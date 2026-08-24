@@ -1,6 +1,7 @@
 import requests
 import logging
-from typing import Optional, Tuple, List
+import math
+from typing import Optional, List, Tuple, Dict
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -8,391 +9,263 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # ─────────────────────────────────────────
-# HARGA LIVE
-# ─────────────────────────────────────────
-
-def get_btc_price() -> Optional[float]:
-    """Ambil harga BTC dari CoinGecko."""
-    url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {"ids": "bitcoin", "vs_currencies": "usd"}
-    try:
-        response = requests.get(url, params=params, timeout=5)
-        response.raise_for_status()
-        return response.json()["bitcoin"]["usd"]
-    except Exception as e:
-        logger.error(f"Ralat BTC: {e}")
-        return None
-
-def get_gold_price() -> Optional[float]:
-    """Ambil harga GOLD dari XAUS."""
-    url = "https://xaus.com/api/v1/spot"
-    try:
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        return response.json()["spot_usd_oz"]
-    except Exception as e:
-        logger.error(f"Ralat GOLD: {e}")
-        return None
-
-
-# ─────────────────────────────────────────
-# FEAR & GREED INDEX
+# DATA DARI BINANCE (OHLC + Volume)
 # ─────────────────────────────────────────
 
-def get_fear_greed() -> Tuple[Optional[int], Optional[str]]:
-    """Ambil Fear & Greed Index dari alternative.me (percuma)."""
-    url = "https://api.alternative.me/fng/?limit=1"
-    try:
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()["data"][0]
-        value = int(data["value"])
-        classification = data["value_classification"]
-        return value, classification
-    except Exception as e:
-        logger.error(f"Ralat Fear & Greed: {e}")
-        return None, None
+def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 200) -> Optional[List[Dict]]:
+    """
+    Ambil data candle dari Binance Public API.
+    symbol: "BTCUSDT" atau "XAUUSDT" (Jika XAU tidak ada, kita guna BTCUSDT sebagai proxy atau API lain)
+    Nota: Binance tidak ada XAUUSDT secara langsung. Kita akan guna API XAUS untuk Gold jika perlu,
+    tapi untuk konsistensi indikator, kita akan cuba dapatkan data terbaik.
+    
+    Untuk Gold, kita akan guna API XAUS yang ada data OHLC (jika ada) atau simulasi jika tiada.
+    Untuk BTC, kita guna Binance.
+    """
+    
+    # Mapping symbol untuk Binance
+    binance_symbol = "BTCUSDT" if symbol == "BTC" else "BTCUSDT" # Gold tidak ada di Binance spot, kita guna BTC untuk demo atau API lain
+    
+    # Jika Gold, kita cuba guna API XAUS history (tapi ia daily). 
+    # Untuk analisis teknikal 1H/4H, kita akan fokus pada BTC dulu, atau kita anggap user nak analisis BTC.
+    # Jika anda mahu Gold sebenar, kita perlukan API berbayar atau API lain yang ada OHLC.
+    # Di sini kita akan fokus pada BTC untuk ketepatan, dan bagi Gold kita guna data harian sebagai proxy.
+    
+    if symbol == "GOLD":
+        # Guna XAUS API untuk data harian (limitasi)
+        url = "https://xaus.com/api/v1/history"
+        try:
+            resp = requests.get(url, timeout=10)
+            data = resp.json()
+            points = data.get("points", [])
+            # Ambil 200 titik terakhir
+            candles = []
+            for p in points[-limit:]:
+                candles.append({
+                    "open": p.get("o", p["c"]),
+                    "high": p.get("h", p["c"]),
+                    "low": p.get("l", p["c"]),
+                    "close": p["c"],
+                    "volume": p.get("v", 0) # Volume mungkin tidak ada di XAUS
+                })
+            return candles
+        except Exception as e:
+            logger.error(f"Ralat data Gold: {e}")
+            return None
 
-
-# ─────────────────────────────────────────
-# DATA HISTORIS UNTUK RSI & EMA
-# ─────────────────────────────────────────
-
-def get_btc_historical(days: int = 30) -> Optional[List[float]]:
-    """Ambil data harga historis BTC dari CoinGecko."""
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-    params = {"vs_currency": "usd", "days": days, "interval": "daily"}
+    # Untuk BTC, guna Binance
+    url = f"https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": binance_symbol,
+        "interval": interval,
+        "limit": limit
+    }
+    
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        prices = [p[1] for p in response.json()["prices"]]
-        return prices
-    except Exception as e:
-        logger.error(f"Ralat historis BTC: {e}")
-        return None
-
-def get_gold_historical(days: int = 30) -> Optional[List[float]]:
-    """Ambil data historis GOLD dari XAUS."""
-    url = "https://xaus.com/api/v1/history"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
         data = response.json()
-        points = data.get("points", [])
-        # Ambil 'days' hari terakhir
-        prices = [p["c"] for p in points[-days:]]
-        return prices
+        
+        candles = []
+        for k in data:
+            candles.append({
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5])
+            })
+        return candles
     except Exception as e:
-        logger.error(f"Ralat historis GOLD: {e}")
+        logger.error(f"Ralat data Binance: {e}")
         return None
 
-
 # ─────────────────────────────────────────
-# PENGIRAAN TEKNIKAL
+# PENGIRAAN INDICATORS
 # ─────────────────────────────────────────
 
-def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
-    """
-    Kira RSI (Relative Strength Index).
-    RSI > 70 = Overbought (terlalu mahal, kemungkinan turun)
-    RSI < 30 = Oversold (terlalu murah, kemungkinan naik)
-    """
-    if not prices or len(prices) < period + 1:
-        return None
+def calculate_sma(prices: List[float], period: int) -> List[float]:
+    sma = []
+    for i in range(len(prices)):
+        if i < period - 1:
+            sma.append(None)
+        else:
+            avg = sum(prices[i-period+1:i+1]) / period
+            sma.append(avg)
+    return sma
 
+def calculate_ema(prices: List[float], period: int) -> List[float]:
+    ema = []
+    multiplier = 2 / (period + 1)
+    sma = sum(prices[:period]) / period
+    ema.append(sma)
+    
+    for i in range(period, len(prices)):
+        ema_val = (prices[i] - ema[-1]) * multiplier + ema[-1]
+        ema.append(ema_val)
+    
+    # Pad awal dengan None
+    return [None] * (period - 1) + ema
+
+def calculate_rsi(prices: List[float], period: int = 14) -> List[float]:
+    rsi = []
     gains, losses = [], []
+    
     for i in range(1, len(prices)):
-        diff = prices[i] - prices[i - 1]
+        diff = prices[i] - prices[i-1]
         gains.append(max(diff, 0))
         losses.append(max(-diff, 0))
+    
+    # Kira avg gain/loss
+    avg_gains = []
+    avg_losses = []
+    
+    for i in range(len(gains)):
+        if i < period - 1:
+            avg_gains.append(None)
+            avg_losses.append(None)
+        else:
+            avg_g = sum(gains[i-period+1:i+1]) / period
+            avg_l = sum(losses[i-period+1:i+1]) / period
+            avg_gains.append(avg_g)
+            avg_losses.append(avg_l)
+    
+    for i in range(len(gains)):
+        if avg_gains[i] is None or avg_losses[i] is None or avg_losses[i] == 0:
+            rsi.append(None)
+        else:
+            rs = avg_gains[i] / avg_losses[i]
+            rsi_val = 100 - (100 / (1 + rs))
+            rsi.append(rsi_val)
+    
+    return [None] + rsi # Pad awal
 
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
+def calculate_macd(prices: List[float]) -> Tuple[List[float], List[float], List[float]]:
+    ema12 = calculate_ema(prices, 12)
+    ema26 = calculate_ema(prices, 26)
+    macd_line = []
+    signal_line = []
+    
+    for i in range(len(prices)):
+        if ema12[i] is None or ema26[i] is None:
+            macd_line.append(None)
+            signal_line.append(None)
+        else:
+            macd = ema12[i] - ema26[i]
+            macd_line.append(macd)
+    
+    # Signal line (EMA 9 dari MACD)
+    valid_macd = [m for m in macd_line if m is not None]
+    signal_ema = calculate_ema(valid_macd, 9)
+    
+    # Align signal line dengan original list
+    # Ini agak kompleks, kita ringkaskan: kita ambil nilai terkini sahaja
+    # Untuk kesederhanaan, kita anggap signal line adalah EMA 9 dari MACD
+    # Kita akan return nilai terkini sahaja untuk keputusan
+    
+    return macd_line, signal_ema, None # Return full list, kita ambil yang terakhir
 
-    if avg_loss == 0:
-        return 100.0
+def calculate_bollinger_bands(prices: List[float], period: int = 20, std_dev: int = 2) -> Tuple[List[float], List[float], List[float]]:
+    sma = calculate_sma(prices, period)
+    upper = []
+    lower = []
+    
+    for i in range(len(prices)):
+        if sma[i] is None:
+            upper.append(None)
+            lower.append(None)
+        else:
+            # Kira std dev
+            window = prices[i-period+1:i+1]
+            mean = sum(window) / period
+            variance = sum((x - mean) ** 2 for x in window) / period
+            std = math.sqrt(variance)
+            upper.append(sma[i] + (std_dev * std))
+            lower.append(sma[i] - (std_dev * std))
+    
+    return sma, upper, lower
 
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(rsi, 2)
+def calculate_atr(candles: List[dict], period: int = 14) -> List[float]:
+    tr_list = []
+    for i in range(1, len(candles)):
+        high = candles[i]["high"]
+        low = candles[i]["low"]
+        prev_close = candles[i-1]["close"]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_list.append(tr)
+    
+    atr = calculate_sma(tr_list, period)
+    return [None] + atr # Align
 
-def calculate_ema(prices: List[float], period: int) -> Optional[float]:
-    """
-    Kira EMA (Exponential Moving Average).
-    """
-    if not prices or len(prices) < period:
-        return None
+def calculate_supertrend(candles: List[dict], period: int = 10, multiplier: float = 3.0) -> Tuple[List[float], List[str]]:
+    # Simplified SuperTrend
+    high = [c["high"] for c in candles]
+    low = [c["low"] for c in candles]
+    close = [c["close"] for c in candles]
+    
+    atr = calculate_atr(candles, period)
+    tr = []
+    for i in range(1, len(candles)):
+        tr.append(max(candles[i]["high"] - candles[i]["low"], abs(candles[i]["high"] - candles[i-1]["close"]), abs(candles[i]["low"] - candles[i-1]["close"])))
+    
+    # Kita akan guna logik mudah: jika close > upper band (Basis) = Bullish
+    # Ini adalah implementasi ringkas. SuperTrend sebenar lebih kompleks.
+    # Kita akan guna ATR untuk menentukan trend.
+    
+    supertrend = []
+    trend = "NEUTRAL"
+    
+    for i in range(len(candles)):
+        if atr[i] is None:
+            supertrend.append(None)
+            continue
+        
+        basis = (high[i] + low[i]) / 2
+        upper = basis + (multiplier * atr[i])
+        lower = basis - (multiplier * atr[i])
+        
+        if i == 0:
+            supertrend.append(upper)
+            trend = "NEUTRAL"
+        else:
+            prev_sup = supertrend[-1]
+            if close[i] < prev_sup:
+                supertrend.append(upper)
+                trend = "BEARISH"
+            elif close[i] > prev_sup:
+                supertrend.append(lower)
+                trend = "BULLISH"
+            else:
+                supertrend.append(prev_sup)
+    
+    return supertrend, [trend] * len(candles)
 
-    multiplier = 2 / (period + 1)
-    ema = sum(prices[:period]) / period  # SMA sebagai nilai awal
-
-    for price in prices[period:]:
-        ema = (price - ema) * multiplier + ema
-
-    return round(ema, 2)
-
-def get_ema_signal(prices: List[float]) -> Tuple[Optional[float], Optional[float], str]:
-    """
-    EMA 9 vs EMA 21 Crossover Signal.
-    EMA9 > EMA21 = BUY Signal (Golden Cross)
-    EMA9 < EMA21 = SELL Signal (Death Cross)
-    """
-    ema9 = calculate_ema(prices, 9)
-    ema21 = calculate_ema(prices, 21)
-
-    if ema9 is None or ema21 is None:
-        return ema9, ema21, "⚪ Data Tidak Cukup"
-
-    if ema9 > ema21:
-        signal = "🟢 BUY (Golden Cross: EMA9 > EMA21)"
-    elif ema9 < ema21:
-        signal = "🔴 SELL (Death Cross: EMA9 < EMA21)"
-    else:
-        signal = "⚪ NEUTRAL (EMA9 = EMA21)"
-
-    return ema9, ema21, signal
-
-def interpret_rsi(rsi: float) -> str:
-    """Tafsiran RSI dalam bahasa mudah."""
-    if rsi >= 70:
-        return f"🔴 Overbought ({rsi}) — Harga terlalu tinggi, kemungkinan turun"
-    elif rsi <= 30:
-        return f"🟢 Oversold ({rsi}) — Harga terlalu rendah, kemungkinan naik"
-    elif rsi >= 55:
-        return f"🟡 Sedikit Bullish ({rsi}) — Momentum positif"
-    elif rsi <= 45:
-        return f"🟠 Sedikit Bearish ({rsi}) — Momentum negatif"
-    else:
-        return f"⚪ Neutral ({rsi}) — Pasaran dalam keseimbangan"
-
-def interpret_fear_greed(value: int) -> str:
-    """Emoji berdasarkan nilai Fear & Greed."""
-    if value >= 75:
-        return "🤑 Extreme Greed"
-    elif value >= 55:
-        return "😊 Greed"
-    elif value >= 45:
-        return "😐 Neutral"
-    elif value >= 25:
-        return "😨 Fear"
-    else:
-        return "😱 Extreme Fear"
-
+def detect_fvg_and_bos(candles: List[dict]) -> Dict:
+    # FVG & BOS (sama seperti sebelum ini)
+    fvg_list = []
+    for i in range(2, len(candles)):
+        c1, c2, c3 = candles[i-2], candles[i-1], candles[i]
+        if c3["low"] > c1["high"]:
+            fvg_list.append({"type": "BULLISH", "top": c1["high"], "bottom": c3["low"]})
+        elif c3["high"] < c1["low"]:
+            fvg_list.append({"type": "BEARISH", "top": c3["high"], "bottom": c1["low"]})
+    
+    # BOS
+    highs = [c["high"] for c in candles[-5:]]
+    lows = [c["low"] for c in candles[-5:]]
+    bos = "NEUTRAL"
+    if highs[-1] > highs[-3] and lows[-1] > lows[-3]:
+        bos = "BULLISH_BOS"
+    elif highs[-1] < highs[-3] and lows[-1] < lows[-3]:
+        bos = "BEARISH_BOS"
+    
+    return {"fvg": fvg_list, "bos": bos}
 
 # ─────────────────────────────────────────
-# SMART ZONES (DIKEMASKINI)
+# LOGIK UTAMA: GABUNGAN SEMUA INDICATOR
 # ─────────────────────────────────────────
 
-def calculate_smart_zones(
-    price: float, asset: str
-) -> Tuple[float, float, float, float, str, str]:
-    """Kira zon entry berdasarkan volatiliti dan trend."""
-    if asset == "BTC":
-        volatility = 0.025
-        threshold_buy = 60000
-        threshold_sell = 65000
-    else:
-        volatility = 0.015
-        threshold_buy = 2000
-        threshold_sell = 2400
-
-    if price > threshold_sell:
-        trend = "BULLISH 🟢"
-        buy_margin = price * volatility
-        sell_margin = price * (volatility * 0.5)
-        buy_low = price - buy_margin
-        buy_high = price - (buy_margin * 0.5)
-        sell_low = price + sell_margin
-        sell_high = price + (sell_margin * 1.5)
-        advice = "Trend Naik: Cari Buy pada dip."
-    elif price < threshold_buy:
-        trend = "BEARISH 🔴"
-        sell_margin = price * volatility
-        buy_margin = price * (volatility * 0.5)
-        sell_low = price + sell_margin
-        sell_high = price + (sell_margin * 0.5)
-        buy_low = price - buy_margin
-        buy_high = price - (buy_margin * 1.5)
-        advice = "Trend Turun: Cari Sell pada rally."
-    else:
-        trend = "NEUTRAL ⚪"
-        margin = price * (volatility * 0.8)
-        buy_low = price - margin
-        buy_high = price - (margin * 0.5)
-        sell_low = price + (margin * 0.5)
-        sell_high = price + margin
-        advice = "Sideways: Entry berhati-hati di zon sempadan."
-
-    return buy_low, buy_high, sell_low, sell_high, trend, advice
-
-
-# ─────────────────────────────────────────
-# SIGNAL GENERATOR
-# ─────────────────────────────────────────
-
-def generate_smart_signal(asset_name: str, price: float) -> str:
+def analyze_market_strategies(asset_name: str) -> Tuple[str, str, str]:
     """
-    Bina signal lengkap dengan RSI + EMA + Fear & Greed + Smart Zones.
-    """
-    if not price:
-        return f"❌ Data {asset_name} tidak tersedia."
-
-    fmt = lambda x: f"${x:,.2f}"
-
-    # Ambil data historis
-    if asset_name == "BTC":
-        prices_hist = get_btc_historical(30)
-    else:
-        prices_hist = get_gold_historical(30)
-
-    # Kira RSI
-    rsi = calculate_rsi(prices_hist) if prices_hist else None
-    rsi_text = interpret_rsi(rsi) if rsi else "⚪ RSI tidak tersedia"
-
-    # Kira EMA
-    ema9, ema21, ema_signal = get_ema_signal(prices_hist) if prices_hist else (None, None, "⚪ EMA tidak tersedia")
-    ema_text = (
-        f"EMA9: {fmt(ema9)} | EMA21: {fmt(ema21)}\n"
-        f"   Signal: {ema_signal}"
-    ) if ema9 and ema21 else "⚪ EMA tidak tersedia"
-
-    # Fear & Greed (hanya untuk BTC)
-    fg_text = ""
-    if asset_name == "BTC":
-        fg_value, fg_class = get_fear_greed()
-        if fg_value:
-            fg_emoji = interpret_fear_greed(fg_value)
-            fg_text = f"\n😱 *Fear & Greed:* {fg_value}/100 — {fg_emoji}\n"
-
-    # Smart Zones
-    buy_low, buy_high, sell_low, sell_high, trend, advice = calculate_smart_zones(price, asset_name)
-
-    msg = (
-        f"📊 *SMART SIGNAL: {asset_name}*\n"
-        f"💵 Harga: {fmt(price)}\n"
-        f"📈 Trend: {trend}\n"
-        f"💡 {advice}\n"
-        f"{fg_text}\n"
-        f"📉 *RSI (14):*\n"
-        f"   {rsi_text}\n\n"
-        f"📊 *EMA Crossover:*\n"
-        f"   {ema_text}\n\n"
-        f"🟢 *ZON BUY (LONG)*\n"
-        f"   Entry: {fmt(buy_low)} — {fmt(buy_high)}\n"
-        f"   Stop Loss: {fmt(buy_low * 0.995)}\n"
-        f"   Take Profit: {fmt(buy_high * 1.04)}\n\n"
-        f"🔴 *ZON SELL (SHORT)*\n"
-        f"   Entry: {fmt(sell_low)} — {fmt(sell_high)}\n"
-        f"   Stop Loss: {fmt(sell_high * 1.005)}\n"
-        f"   Take Profit: {fmt(sell_low * 0.96)}\n\n"
-        f"⚠️ *Amaran:* Gunakan pengurusan modal. "
-        f"Analisis automatik sahaja."
-    )
-    return msg
-
-def analyze_gold_btc() -> str:
-    """Laporan penuh BTC + GOLD."""
-    btc = get_btc_price()
-    gold = get_gold_price()
-
-    separator = "\n" + ("─" * 30) + "\n\n"
-    return (
-        f"📈 *Laporan Pasaran PRO*\n\n"
-        + generate_smart_signal("BTC", btc)
-        + separator
-        + generate_smart_signal("GOLD", gold)
-    )
-
-# Alias
-gold_market_operators = analyze_gold_btc
-# ─────────────────────────────────────────
-# DATABASE FUNCTIONS (PostgreSQL)
-# ─────────────────────────────────────────
-import psycopg2
-import os
-
-DB_URL = os.getenv("DATABASE_URL")  # Railway akan set ini automatik
-
-def get_db_connection():
-    """Sambung ke PostgreSQL"""
-    if not DB_URL:
-        return None
-    try:
-        return psycopg2.connect(DB_URL)
-    except Exception as e:
-        logger.error(f"Ralat DB: {e}")
-        return None
-
-def init_db():
-    """Cipta table subscribers jika belum ada"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS subscribers (
-                chat_id BIGINT PRIMARY KEY,
-                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ralat init DB: {e}")
-        return False
-
-def add_subscriber_db(chat_id: int) -> bool:
-    """Tambah subscriber ke database"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO subscribers (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING",
-            (chat_id,)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ralat add subscriber: {e}")
-        return False
-
-def remove_subscriber_db(chat_id: int) -> bool:
-    """Buang subscriber dari database"""
-    conn = get_db_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM subscribers WHERE chat_id = %s", (chat_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ralat remove subscriber: {e}")
-        return False
-
-def get_all_subscribers() -> list:
-    """Dapatkan semua chat_id subscriber"""
-    conn = get_db_connection()
-    if not conn:
-        return []
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT chat_id FROM subscribers")
-        subscribers = [row[0] for row in cur.fetchall()]
-        cur.close()
-        conn.close()
-        return subscribers
-    except Exception as e:
-        logger.error(f"Ralat get subscribers: {e}")
-        return []
+    Analisis gabungan: S
