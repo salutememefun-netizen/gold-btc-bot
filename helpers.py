@@ -355,6 +355,121 @@ def get_bos_display(bos_type):
     if bos_type == "BULLISH_BOS": return "🟢 BULLISH BOS"
     if bos_type == "BEARISH_BOS": return "🔴 BEARISH BOS"
     return "⚪ NEUTRAL"
+# ─────────────────────────────────────────
+# DATABASE FUNCTIONS (PostgreSQL)
+# ─────────────────────────────────────────
+import psycopg2
+import os
 
+DB_URL = os.getenv("DATABASE_URL")
+
+def get_db_connection():
+    """Sambung ke PostgreSQL"""
+    if not DB_URL:
+        return None
+    try:
+        return psycopg2.connect(DB_URL)
+    except Exception as e:
+        logger.error(f"Ralat DB: {e}")
+        return None
+
+def init_db():
+    """Cipta table subscribers jika belum ada"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subscribers (
+                chat_id BIGINT PRIMARY KEY,
+                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ralat init DB: {e}")
+        return False
+
+def add_subscriber_db(chat_id: int) -> bool:
+    """Tambah subscriber ke database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO subscribers (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING",
+            (chat_id,)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ralat add subscriber: {e}")
+        return False
+
+def remove_subscriber_db(chat_id: int) -> bool:
+    """Buang subscriber dari database"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM subscribers WHERE chat_id = %s", (chat_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ralat remove subscriber: {e}")
+        return False
+
+def get_all_subscribers() -> list:
+    """Dapatkan semua chat_id subscriber"""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT chat_id FROM subscribers")
+        subscribers = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return subscribers
+    except Exception as e:
+        logger.error(f"Ralat get subscribers: {e}")
+        return []
+
+# ─────────────────────────────────────────
+# HARGA LIVE (Untuk fallback)
+# ─────────────────────────────────────────
+
+def get_btc_price() -> Optional[float]:
+    """Ambil harga BTC dari CoinGecko"""
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {"ids": "bitcoin", "vs_currencies": "usd"}
+    try:
+        response = requests.get(url, params=params, timeout=5)
+        response.raise_for_status()
+        return response.json()["bitcoin"]["usd"]
+    except Exception as e:
+        logger.error(f"Ralat BTC: {e}")
+        return None
+
+def get_gold_price() -> Optional[float]:
+    """Ambil harga GOLD dari XAUS"""
+    url = "https://xaus.com/api/v1/spot"
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        return response.json()["spot_usd_oz"]
+    except Exception as e:
+        logger.error(f"Ralat GOLD: {e}")
+        return None
 # Alias
 gold_market_operators = generate_ultimate_signal
