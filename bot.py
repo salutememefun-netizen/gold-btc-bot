@@ -36,6 +36,9 @@ def get_main_menu():
         [
             InlineKeyboardButton("🔔 Subscribe Auto-Alert", callback_data='sub_alert'),
             InlineKeyboardButton("🔕 Unsubscribe", callback_data='unsub_alert')
+        ],
+        [
+            InlineKeyboardButton("🧪 Test Alert (Manual)", callback_data='test_alert')
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -44,7 +47,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome = (
         "🤖 *Bot Signal PRO: Smart Zones*\n\n"
         "Analisis dengan RSI, EMA & Smart Zones.\n\n"
-        "🔔 *Auto-Alert:* Subscribe untuk dapat laporan setiap 1 jam!"
+        "🔔 *Auto-Alert:* Subscribe untuk dapat laporan setiap 1 jam!\n"
+        "🧪 *Test Alert:* Tekan butang 'Test Alert' untuk test sekarang."
     )
     await update.message.reply_text(welcome, parse_mode='Markdown', reply_markup=get_main_menu())
 
@@ -77,7 +81,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if add_subscriber_db(chat_id):
             await query.edit_message_text("✅ *Disubscribe!*\nAlert setiap 1 jam.", parse_mode='Markdown')
         else:
-            await query.edit_message_text("❌ Ralat. Cuba lagi.", parse_mode='Markdown')
+            await query.edit_message_text("❌ Ralat sambungan DB. Cuba lagi.", parse_mode='Markdown')
         await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
 
     elif query.data == 'unsub_alert':
@@ -85,6 +89,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ *Unsubscribe!*\nAlert dihentikan.", parse_mode='Markdown')
         else:
             await query.edit_message_text("❌ Ralat. Cuba lagi.", parse_mode='Markdown')
+        await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
+
+    elif query.data == 'test_alert':
+        await query.edit_message_text("🧪 *Test Alert:*\nMenghantar test message...")
+        try:
+            from alert import send_alerts
+            import asyncio
+            await send_alerts()  # Panggil fungsi dari alert.py
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="✅ *Test Berjaya!*\nAlert dihantar ke semua subscriber.\nCheck Telegram anda sekarang!",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ *Test Gagal:*\n{str(e)}",
+                parse_mode='Markdown'
+            )
         await context.bot.send_message(chat_id=chat_id, text="Menu:", reply_markup=get_main_menu())
 
 def main():
