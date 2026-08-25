@@ -120,37 +120,78 @@ def generate_signal(symbol, name):
     price = get_price(symbol)
     if price == 0:
         return "❌ Gagal ambil harga. Semak sambungan."
+
     df = get_historical_data(symbol)
     if df is None or len(df) < 20:
-        return f"{'🥇' if name=='GOLD' else '₿'} *SIGNAL {name}*\n💰 Harga: ${price}\n\n⚠️ Data tidak cukup."
+        return (
+            f"{'🥇' if name=='GOLD' else '₿'} *SIGNAL {name}*\n"
+            f"💰 Harga: ${price}\n\n"
+            f"⚠️ Data tidak cukup."
+        )
+
     closes = df["close"].tolist()
     rsi = calculate_rsi(closes)
     ema9 = calculate_ema(closes, 9)
     ema21 = calculate_ema(closes, 21)
     bb_u, bb_l = calculate_bollinger(closes)
     st = calculate_supertrend(df)
+
+    # Tentukan signal
     ema_sig = "BUY" if ema9 > ema21 else "SELL" if ema9 < ema21 else "HOLD"
     buy_sc = (1 if ema_sig=="BUY" else 0) + (1 if rsi > 55 else 0) + (1 if st=="BULLISH 🟢" else 0)
     sell_sc = (1 if ema_sig=="SELL" else 0) + (1 if rsi < 45 else 0) + (1 if st=="BEARISH 🔴" else 0)
     sig = "🟢 BUY" if buy_sc > sell_sc else "🔴 SELL" if sell_sc > buy_sc else "🟡 HOLD"
     trend = "BULLISH" if buy_sc > sell_sc else "BEARISH" if sell_sc > buy_sc else "NEUTRAL"
+
     sl_p = 10 if name == "GOLD" else 300
     tp_p = 20 if name == "GOLD" else 600
+
     if "BUY" in sig:
-        sl = round(price - sl_p, 2)
-        tp = round(price + tp_p, 2)
+        # Zone BUY: Entry dekat Lower Bollinger (support)
+        entry = round(bb_l + (price - bb_l) * 0.3, 2)
+        sl = round(entry - sl_p, 2)
+        tp = round(entry + tp_p, 2)
         zon = "🟢 ZON BUY (LONG)"
     elif "SELL" in sig:
-        sl = round(price + sl_p, 2)
-        tp = round(price - tp_p, 2)
+        # Zone SELL: Entry dekat Upper Bollinger (resistance)
+        entry = round(bb_u - (bb_u - price) * 0.3, 2)
+        sl = round(entry + sl_p, 2)
+        tp = round(entry - tp_p, 2)
         zon = "🔴 ZON SELL (SHORT)"
     else:
-        sl = round(price - sl_p, 2)
-        tp = round(price + tp_p, 2)
-        zon = "🟡 ZON NEUTRAL"
+        # HOLD: Tunjuk kedua-dua zone
+        entry_buy = round(bb_l + (price - bb_l) * 0.3, 2)
+        entry_sell = round(bb_u - (bb_u - price) * 0.3, 2)
+        sl_buy = round(entry_buy - sl_p, 2)
+        tp_buy = round(entry_buy + tp_p, 2)
+        sl_sell = round(entry_sell + sl_p, 2)
+        tp_sell = round(entry_sell - tp_p, 2)
+        zon = "🟡 NEUTRAL"
+
+        e = "🥇" if name == "GOLD" else "₿"
+        msg = f"{e} *SIGNAL {name}*\n"
+        msg += f"💰 Harga Semasa: ${price}\n\n"
+        msg += f"⚡ Supertrend: {st}\n"
+        msg += f"📊 RSI (14): {rsi}\n"
+        msg += f"📉 Bollinger: {bb_u} / {bb_l}\n"
+        msg += f"📈 EMA: {ema9} / {ema21}\n\n"
+        msg += f"🎯 *SIGNAL: 🟡 HOLD*\n"
+        msg += f"📈 *Trend: NEUTRAL*\n\n"
+        msg += f"🟢 *ZON BUY (LONG):*\n"
+        msg += f"   Entry: ${entry_buy}\n"
+        msg += f"   SL: ${sl_buy}\n"
+        msg += f"   TP: ${tp_buy}\n\n"
+        msg += f"🔴 *ZON SELL (SHORT):*\n"
+        msg += f"   Entry: ${entry_sell}\n"
+        msg += f"   SL: ${sl_sell}\n"
+        msg += f"   TP: ${tp_sell}\n\n"
+        msg += f"⚠️ *NOTA:* Harga pasaran global.\n"
+        msg += f"Semak MT5 anda sebelum entry."
+        return msg
+
     e = "🥇" if name == "GOLD" else "₿"
     msg = f"{e} *SIGNAL {name}*\n"
-    msg += f"💰 Harga: ${price}\n\n"
+    msg += f"💰 Harga Semasa: ${price}\n\n"
     msg += f"⚡ Supertrend: {st}\n"
     msg += f"📊 RSI (14): {rsi}\n"
     msg += f"📉 Bollinger: {bb_u} / {bb_l}\n"
@@ -158,7 +199,7 @@ def generate_signal(symbol, name):
     msg += f"🎯 *SIGNAL: {sig}*\n"
     msg += f"📈 *Trend: {trend}*\n\n"
     msg += f"{zon}:\n"
-    msg += f"   Entry: ${price}\n"
+    msg += f"   Entry: ${entry}\n"
     msg += f"   SL: ${sl}\n"
     msg += f"   TP: ${tp}\n\n"
     msg += f"⚠️ *NOTA:* Harga pasaran global.\n"
@@ -177,10 +218,20 @@ def check_zone_alert(symbol, name):
     ema9 = calculate_ema(closes, 9)
     ema21 = calculate_ema(closes, 21)
     st = calculate_supertrend(df)
+    bb_u, bb_l = calculate_bollinger(closes)
     sl_p = 10 if name == "GOLD" else 300
     tp_p = 20 if name == "GOLD" else 600
-    if rsi <= 35 and ema9 > ema21 and st == "BULLISH 🟢":
-        return True, "BUY", price, round(price + tp_p, 2), round(price - sl_p, 2)
-    elif rsi >= 65 and ema9 < ema21 and st == "BEARISH 🔴":
-        return True, "SELL", price, round(price - tp_p, 2), round(price + sl_p, 2)
+
+    # Kira zone entry
+    buy_entry = round(bb_l + (price - bb_l) * 0.3, 2)
+    sell_entry = round(bb_u - (bb_u - price) * 0.3, 2)
+
+    # Alert BUY: Harga dekat zone BUY + RSI oversold atau EMA bullish
+    if price <= buy_entry * 1.002 and (rsi < 45 or ema9 > ema21):
+        return True, "BUY", buy_entry, round(buy_entry + tp_p, 2), round(buy_entry - sl_p, 2)
+
+    # Alert SELL: Harga dekat zone SELL + RSI overbought atau EMA bearish
+    elif price >= sell_entry * 0.998 and (rsi > 55 or ema9 < ema21):
+        return True, "SELL", sell_entry, round(sell_entry - tp_p, 2), round(sell_entry + sl_p, 2)
+
     return False, None, 0, 0, 0
