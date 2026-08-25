@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Helper functions untuk Bot Trading GOLD/BTC
+Safe version - No emoji, no syntax error
 """
 
 import requests
@@ -16,22 +17,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # DATABASE CONFIG
-DB_URL = (
-    os.getenv("DATABASE_URL") or
-    os.getenv("POSTGRES_URL") or
-    os.getenv("DATABASE") or
-    os.getenv("DB_URL") or
-    ""
-)
+DB_URL = os.getenv("DATABASE_URL")
+if not DB_URL:
+    DB_URL = os.getenv("POSTGRES_URL")
+if not DB_URL:
+    DB_URL = os.getenv("DATABASE")
 
-if not DB_URL or DB_URL.strip() == "":
-    logger.error("DATABASE_URL kosong atau tidak dijumpai!")
+if not DB_URL:
+    logger.error("DATABASE_URL tidak dijumpai!")
 else:
     logger.info("Database URL dijumpai!")
 
 def get_db_connection():
-    if not DB_URL or DB_URL.strip() == "":
-        logger.error("Tiada DATABASE_URL untuk sambung!")
+    if not DB_URL:
         return None
     try:
         import psycopg2
@@ -48,12 +46,7 @@ def init_db():
         return False
     try:
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS subscribers (
-                chat_id BIGINT PRIMARY KEY,
-                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        cur.execute("CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY, subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         conn.commit()
         cur.close()
         conn.close()
@@ -63,16 +56,13 @@ def init_db():
         logger.error("Ralat init DB: " + str(e))
         return False
 
-def add_subscriber_db(chat_id: int) -> bool:
+def add_subscriber_db(chat_id):
     conn = get_db_connection()
     if not conn:
         return False
     try:
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO subscribers (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING",
-            (chat_id,)
-        )
+        cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (chat_id,))
         conn.commit()
         cur.close()
         conn.close()
@@ -81,7 +71,7 @@ def add_subscriber_db(chat_id: int) -> bool:
         logger.error("Ralat add subscriber: " + str(e))
         return False
 
-def remove_subscriber_db(chat_id: int) -> bool:
+def remove_subscriber_db(chat_id):
     conn = get_db_connection()
     if not conn:
         return False
@@ -96,23 +86,22 @@ def remove_subscriber_db(chat_id: int) -> bool:
         logger.error("Ralat remove subscriber: " + str(e))
         return False
 
-def get_all_subscribers() -> list:
+def get_all_subscribers():
     conn = get_db_connection()
     if not conn:
         return []
     try:
         cur = conn.cursor()
         cur.execute("SELECT chat_id FROM subscribers")
-        subscribers = [row[0] for row in cur.fetchall()]
+        result = [row[0] for row in cur.fetchall()]
         cur.close()
         conn.close()
-        return subscribers
+        return result
     except Exception as e:
         logger.error("Ralat get subscribers: " + str(e))
         return []
 
-# HARGA LIVE
-def get_btc_price() -> Optional[float]:
+def get_btc_price():
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         params = {"ids": "bitcoin", "vs_currencies": "usd"}
@@ -122,7 +111,7 @@ def get_btc_price() -> Optional[float]:
         logger.error("Ralat BTC: " + str(e))
         return None
 
-def get_gold_price() -> Optional[float]:
+def get_gold_price():
     try:
         url = "https://xaus.com/api/v1/spot"
         response = requests.get(url, timeout=5)
@@ -131,8 +120,7 @@ def get_gold_price() -> Optional[float]:
         logger.error("Ralat GOLD: " + str(e))
         return None
 
-# DATA CANDLES
-def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 100) -> Optional[List[Dict]]:
+def get_binance_candles(symbol, interval="1h", limit=100):
     if symbol == "GOLD":
         try:
             resp = requests.get("https://xaus.com/api/v1/history", timeout=10)
@@ -153,11 +141,7 @@ def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 100) -> 
             return None
 
     try:
-        resp = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": "BTCUSDT", "interval": interval, "limit": limit},
-            timeout=10
-        )
+        resp = requests.get("https://api.binance.com/api/v3/klines", params={"symbol": "BTCUSDT", "interval": interval, "limit": limit}, timeout=10)
         data = resp.json()
         candles = []
         for k in data:
@@ -173,8 +157,7 @@ def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 100) -> 
         logger.error("Ralat Binance: " + str(e))
         return None
 
-# INDICATORS
-def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
+def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return None
     gains = []
@@ -188,10 +171,9 @@ def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
-    result = 100 - (100 / (1 + rs))
-    return round(result, 2)
+    return round(100 - (100 / (1 + rs)), 2)
 
-def calculate_ema(prices: List[float], period: int) -> Optional[float]:
+def calculate_ema(prices, period):
     if len(prices) < period:
         return None
     multiplier = 2 / (period + 1)
@@ -200,7 +182,7 @@ def calculate_ema(prices: List[float], period: int) -> Optional[float]:
         ema = (price - ema) * multiplier + ema
     return round(ema, 2)
 
-def calculate_macd(prices: List[float]) -> Tuple[Optional[float], Optional[float]]:
+def calculate_macd(prices):
     ema12 = calculate_ema(prices, 12)
     ema26 = calculate_ema(prices, 26)
     if ema12 is None or ema26 is None:
@@ -208,7 +190,7 @@ def calculate_macd(prices: List[float]) -> Tuple[Optional[float], Optional[float
     macd = round(ema12 - ema26, 2)
     return macd, ema12
 
-def calculate_bollinger_bands(prices: List[float], period: int = 20) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+def calculate_bollinger_bands(prices, period=20):
     if len(prices) < period:
         return None, None, None
     sma = sum(prices[-period:]) / period
@@ -218,7 +200,7 @@ def calculate_bollinger_bands(prices: List[float], period: int = 20) -> Tuple[Op
     lower = sma - (2 * std)
     return round(sma, 2), round(upper, 2), round(lower, 2)
 
-def calculate_atr(candles: List[dict], period: int = 14) -> Optional[float]:
+def calculate_atr(candles, period=14):
     if len(candles) < period + 1:
         return None
     tr_list = []
@@ -230,8 +212,7 @@ def calculate_atr(candles: List[dict], period: int = 14) -> Optional[float]:
         tr_list.append(tr)
     return round(sum(tr_list[-period:]) / period, 2)
 
-# ANALISIS UTAMA
-def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
+def analyze_market_strategies(asset_name):
     candles = get_binance_candles(asset_name, "1h", 50)
     if not candles:
         return "WAIT", "Data tidak tersedia"
@@ -262,20 +243,13 @@ def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
 
     return signal, reason
 
-def generate_ultimate_signal(asset_name: str, price: float) -> str:
+def generate_ultimate_signal(asset_name, price):
     signal_type, reason = analyze_market_strategies(asset_name)
-    if signal_type == "BUY":
-        emoji = "🟢"
-    elif signal_type == "SELL":
-        emoji = "🔴"
-    else:
-        emoji = "⚪"
-    
     msg = (
-        "⚡ SIGNAL ULTIMATE: " + asset_name + "\n\n"
-        "💵 Harga: $" + "{:,.2f}".format(price) + "\n\n"
-        emoji + " SIGNAL: " + signal_type + "\n"
-        "💡 Analisis: " + reason + "\n\n"
-        "⚠️ Jangan entry buta. Gunakan pengurusan modal!"
+        "=== SIGNAL ULTIMATE: " + asset_name + " ===\n\n"
+        "Harga: $" + "{:,.2f}".format(price) + "\n\n"
+        "SIGNAL: " + signal_type + "\n"
+        "Analisis: " + reason + "\n\n"
+        "Jangan entry buta. Gunakan pengurusan modal!"
     )
     return msg
