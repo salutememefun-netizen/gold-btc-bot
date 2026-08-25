@@ -1,9 +1,12 @@
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from analyzer import generate_signal, get_price
+from analyzer import generate_signal, get_price, check_zone_alert
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+SUBSCRIBERS = set()
 
 # --- Menu Butang Utama ---
 def main_menu():
@@ -12,9 +15,7 @@ def main_menu():
             InlineKeyboardButton("🟢 Signal BTC", callback_data="signal_btc"),
             InlineKeyboardButton("🏆 Signal GOLD", callback_data="signal_gold")
         ],
-        [
-            InlineKeyboardButton("📊 Laporan Penuh", callback_data="laporan_penuh")
-        ],
+        [InlineKeyboardButton("📊 Laporan Penuh", callback_data="laporan_penuh")],
         [
             InlineKeyboardButton("📈 Carta BTC", callback_data="carta_btc"),
             InlineKeyboardButton("📈 Carta GOLD", callback_data="carta_gold")
@@ -28,24 +29,12 @@ def main_menu():
 
 # --- /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "👋 *Selamat datang, AetherGlory!*\n\n"
-        "Bot Trading GOLD/BTC AI Analysis\n\n"
-        "Pilih signal yang anda mahu:\n"
-    )
-    await update.message.reply_text(
-        msg,
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+    msg = "👋 *Selamat datang, AetherGlory!*\n\nBot Trading GOLD/BTC AI Analysis\n\nPilih signal yang anda mahu:\n"
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_menu())
 
 # --- /menu ---
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 *Menu Utama*\nPilih signal:",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+    await update.message.reply_text("📋 *Menu Utama*\nPilih signal:", parse_mode="Markdown", reply_markup=main_menu())
 
 # --- /test ---
 async def test_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,39 +53,23 @@ async def get_price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         btc = get_price("BTC-USD")
         gold = get_price("GC=F")
-        msg = (
-            "💰 *HARGA REAL-TIME*\n\n"
-            "BTC  : $" + f"{btc:,.2f}" + "\n"
-            "GOLD : $" + f"{gold:,.2f}" + "\n\n"
-            "Update: Sekarang"
-        )
+        msg = f"💰 *HARGA REAL-TIME*\n\nBTC: ${btc:,.2f}\nGOLD: ${gold:,.2f}\n\nUpdate: Sekarang"
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_menu())
     except Exception as e:
         await update.message.reply_text("❌ Ralat: " + str(e))
 
 # --- /status ---
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✅ Status: SUBSCRIBED\n"
-        "Anda terima signal setiap jam.\n\n"
-        "Total Subscriber: 1",
-        reply_markup=main_menu()
-    )
+    user_id = update.effective_user.id
+    is_sub = "✅ SUBSCRIBED" if user_id in SUBSCRIBERS else "❌ NOT SUBSCRIBED"
+    await update.message.reply_text(f"Status: {is_sub}\nAnda akan terima signal setiap jam jika subscribed.", reply_markup=main_menu())
 
 # --- /help ---
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "📖 *Bantuan*\n\n"
-        "/start - Mulakan bot\n"
-        "/menu - Tunjuk menu\n"
-        "/test - Test signal\n"
-        "/price - Harga terkini\n"
-        "/status - Status subscribe\n"
-        "/help - Bantuan"
-    )
+    msg = "📖 *Bantuan*\n\n/start - Mulakan bot\n/menu - Tunjuk menu\n/test - Test signal\n/price - Harga terkini\n/status - Status subscribe\n/help - Bantuan"
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_menu())
 
-# --- Handler Butang ---
+# --- Button Handler ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -143,6 +116,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "subscribe":
+        user_id = update.effective_user.id
+        SUBSCRIBERS.add(user_id)
         await query.message.reply_text(
             "🔔 *Berjaya Subscribe!*\n\nAnda akan terima signal setiap 1 jam.",
             parse_mode="Markdown",
@@ -150,24 +125,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "unsubscribe":
+        user_id = update.effective_user.id
+        SUBSCRIBERS.discard(user_id)
         await query.message.reply_text(
             "🔕 *Berjaya Unsubscribe!*\n\nAnda tidak akan terima signal lagi.",
             parse_mode="Markdown",
             reply_markup=main_menu()
         )
 
-def main():
-    app = Application.builder().token(TOKEN).build()
+# --- Auto-Signal Function (dengan Logik Zon Alert) ---
+async def send_auto_signal():
+    print(f"[{datetime.now()}] Menghantar signal auto kepada subscriber...")
+    if not SUBSCRIBERS:
+        print("Tiada subscriber.")
+        return
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CommandHandler("test", test_signal))
-    app.add_handler(CommandHandler("price", get_price_cmd))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    try:
+        # Semak status zon untuk BTC dan GOLD
+        btc_active, btc_type, btc_entry, btc_tp, btc_sl = check_zone_alert("BTC-USD", "BTC")
+        gold_active, gold_type, gold_entry, gold_tp, gold_sl = check_zone_alert("GC=F", "GOLD")
 
-    app.run_polling()
+        for user_id in SUBSCRIBERS:
+            try:
+                # --- Hantar Alert BTC Jika Zon Aktif ---
+                if btc_active:
+                    alert_msg = (
+                        f"🚨 *ALERT ZON ENTRY AKTIF: BTC*\n\n"
+                        f"📊 *Zon:* {btc_type}\n"
+                        f"💰 *Entry:* ${btc_entry:,.2f}\n"
+                        f"🎯 *Take Profit:* ${btc_tp:,.2f}\n"
+                        f"🛑 *Stop Loss:* ${btc_sl:,.2f}\n\n"
+                        f"💡 *Harga semasa berada dalam zon!* Pertimbangkan entry.\n\n"
+                        f"_(Dijana: {datetime.now().strftime('%H:%M')})_"
+                    )
+                    await context.bot.send_message(chat_id=user_id, text=alert_msg, parse_mode="Markdown")
+                else:
+                    # Jika zon tak aktif, hantar signal penuh
+                    msg = generate_signal("BTC-USD", "BTC")
+                    await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
 
-if __name__ == "__main__":
-    main()
+                # --- Hantar Alert GOLD Jika Zon Aktif ---
+                if gold_active:
+                    alert_msg = (
+                        f"🚨 *ALERT ZON ENTRY AKTIF: GOLD*\n\n"
+                        f"📊 *Zon:* {gold_type}\n"
+                        f"💰 *Entry
