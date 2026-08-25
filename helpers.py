@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Helper functions - Auto detect DB & API
+Helper functions - Auto detect SEMUA kemungkinan nama variable
 """
 
 import requests
@@ -16,29 +16,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================
-# DATABASE: Auto detect dari Railway
+# DATABASE: Cuba SEMUA nama yang mungkin
 # ============================================
-DB_URL = os.getenv("DATABASE_URL")
+DB_URL = (
+    os.getenv("DATABASE_URL") or
+    os.getenv("POSTGRES_URL") or
+    os.getenv("POSTGRES_CONNECTION_STRING") or
+    os.getenv("DATABASE") or
+    os.getenv("DB_URL") or
+    os.getenv("POSTGRES_HOST") or
+    os.getenv("RAILWAY_POSTGRES_URL") or
+    ""
+)
 
 if not DB_URL:
-    logger.warning("⚠️ DATABASE_URL tidak dijumpai! Cuba nama lain...")
-    # Cuba nama lain yang kadang-kadang Railway guna
-    DB_URL = (
-        os.getenv("POSTGRES_URL") or 
-        os.getenv("POSTGRES_HOST") or 
-        os.getenv("DATABASE") or 
-        ""
-    )
+    logger.error("❌ TIDAK ADA DATABASE URL! Cuba semua nama:")
+    for key in os.environ:
+        if 'DB' in key.upper() or 'POSTGRES' in key.upper() or 'DATABASE' in key.upper():
+            val = os.getenv(key)
+            logger.error(f"   {key} = {val[:20]}...")
+else:
+    logger.info(f"✅ Guna database dari: {[k for k in os.environ if os.getenv(k) == DB_URL][0]}")
 
 def get_db_connection():
     if not DB_URL:
-        logger.error("❌ TIDAK ADA DATABASE_URL! Sila semak Railway Variables.")
+        logger.error("❌ Tiada DATABASE_URL untuk sambung!")
         return None
-    
     try:
         import psycopg2
         conn = psycopg2.connect(DB_URL)
-        logger.info("✅ Berhasil sambung ke PostgreSQL!")
+        logger.info("✅ Berhasil sambung PostgreSQL!")
         return conn
     except Exception as e:
         logger.error(f"❌ Gagal sambung DB: {e}")
@@ -59,10 +66,10 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-        logger.info("✅ Table 'subscribers' di-check/dibuat.")
+        logger.info("✅ Table 'subscribers' siap.")
         return True
     except Exception as e:
-        logger.error(f"❌ Gagal init table: {e}")
+        logger.error(f"❌ Error init DB: {e}")
         return False
 
 def add_subscriber_db(chat_id: int) -> bool:
@@ -105,10 +112,10 @@ def get_all_subscribers() -> list:
     try:
         cur = conn.cursor()
         cur.execute("SELECT chat_id FROM subscribers")
-        subscribers = [row[0] for row in cur.fetchall()]
+        subs = [row[0] for row in cur.fetchall()]
         cur.close()
         conn.close()
-        return subscribers
+        return subs
     except Exception as e:
         logger.error(f"❌ Error get subscribers: {e}")
         return []
@@ -118,9 +125,8 @@ def get_all_subscribers() -> list:
 # ============================================
 def get_btc_price() -> Optional[float]:
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price"
-        params = {"ids": "bitcoin", "vs_currencies": "usd"}
-        resp = requests.get(url, params=params, timeout=5)
+        resp = requests.get("https://api.coingecko.com/api/v3/simple/price", 
+                           params={"ids": "bitcoin", "vs_currencies": "usd"}, timeout=5)
         return resp.json()["bitcoin"]["usd"]
     except Exception as e:
         logger.error(f"❌ Error BTC: {e}")
@@ -128,8 +134,7 @@ def get_btc_price() -> Optional[float]:
 
 def get_gold_price() -> Optional[float]:
     try:
-        url = "https://xaus.com/api/v1/spot"
-        resp = requests.get(url, timeout=5)
+        resp = requests.get("https://xaus.com/api/v1/spot", timeout=5)
         return resp.json()["spot_usd_oz"]
     except Exception as e:
         logger.error(f"❌ Error GOLD: {e}")
@@ -172,7 +177,7 @@ def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 100) -> 
         return None
 
 # ============================================
-# INDICATORS & ANALYSIS
+# INDICATORS
 # ============================================
 def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     if len(prices) < period + 1: return None
@@ -184,56 +189,4 @@ def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
     if avg_loss == 0: return 100.0
-    return round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
-
-def calculate_ema(prices: List[float], period: int) -> Optional[float]:
-    if len(prices) < period: return None
-    mult = 2 / (period + 1)
-    ema = sum(prices[:period]) / period
-    for p in prices[period:]:
-        ema = (p - ema) * mult + ema
-    return round(ema, 2)
-
-def calculate_macd(prices: List[float]) -> Tuple[Optional[float], Optional[float]]:
-    e12, e26 = calculate_ema(prices, 12), calculate_ema(prices, 26)
-    if e12 is None or e26 is None: return None, None
-    return round(e12 - e26, 2), e12
-
-def calculate_bollinger_bands(prices: List[float], period: int = 20) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    if len(prices) < period: return None, None, None
-    sma = sum(prices[-period:]) / period
-    std = math.sqrt(sum((x - sma) ** 2 for x in prices[-period:]) / period)
-    return round(sma, 2), round(sma + 2 * std, 2), round(sma - 2 * std, 2)
-
-def calculate_atr(candles: List[dict], period: int = 14) -> Optional[float]:
-    if len(candles) < period + 1: return None
-    trs = []
-    for i in range(1, len(candles)):
-        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    return round(sum(trs[-period:]) / period, 2)
-
-def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
-    candles = get_binance_candles(asset_name, "1h", 50)
-    if not candles: return "WAIT", "Data tidak ada"
-    price = candles[-1]["close"]
-    prices = [c["close"] for c in candles]
-    
-    rsi = calculate_rsi(prices)
-    macd, _ = calculate_macd(prices)
-    _, upper, lower = calculate_bollinger_bands(prices)
-    
-    if rsi and rsi < 30 and macd and macd > 0:
-        return "BUY", f"RSI Oversold ({rsi}) + MACD Positif"
-    if rsi and rsi > 70 and macd and macd < 0:
-        return "SELL", f"RSI Overbought ({rsi}) + MACD Negatif"
-    if lower and price < lower and rsi and rsi < 40:
-        return "BUY", f"Bollinger Lower ({lower:.2f}) + RSI Rendah"
-    if upper and price > upper and rsi and rsi > 60:
-        return "SELL", f"Bollinger Upper ({upper:.2f}) + RSI Tinggi"
-    return "WAIT", "Tiada setup kuat"
-
-def generate_ultimate_signal(asset_name: str, price: float) -> str:
-    sig, reason = analyze_market_strategies(asset_name)
-    icon = "🟢" if sig == "BUY" else "🔴" if sig == "SELL" else "⚪"
-    return f"⚡ *SIGNAL {asset_name}*\n\n💵 ${price:,.2f}\n\n{icon} *{sig}*\n💡 {reason}\n\n⚠️ Gunakan pengurusan modal!"
+    return round(100 - (100 / (1 + avg_gain / avg_loss)), 2
