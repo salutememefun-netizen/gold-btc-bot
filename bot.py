@@ -3,10 +3,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from analyzer import generate_signal, get_price, check_zone_alert
 from apscheduler.schedulers.background import BackgroundScheduler
-import time
+import asyncio
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-SUBSCRIBERS = set()
+SUBSCRIBERS = {}
 ALERT_CACHE = {}
 
 def main_menu():
@@ -21,8 +21,12 @@ def main_menu():
             InlineKeyboardButton("Carta GOLD", callback_data="carta_gold")
         ],
         [
-            InlineKeyboardButton("Alert ON", callback_data="alert_on"),
-            InlineKeyboardButton("Alert OFF", callback_data="alert_off")
+            InlineKeyboardButton("BTC Alert ON", callback_data="btc_alert_on"),
+            InlineKeyboardButton("BTC Alert OFF", callback_data="btc_alert_off")
+        ],
+        [
+            InlineKeyboardButton("GOLD Alert ON", callback_data="gold_alert_on"),
+            InlineKeyboardButton("GOLD Alert OFF", callback_data="gold_alert_off")
         ],
         [
             InlineKeyboardButton("Subscribe", callback_data="subscribe"),
@@ -60,17 +64,23 @@ async def get_price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    is_sub = "SUBSCRIBED" if user_id in SUBSCRIBERS else "NOT SUBSCRIBED"
-    await update.message.reply_text("Status: " + is_sub, reply_markup=main_menu())
+    if user_id in SUBSCRIBERS:
+        btc_status = "ON" if SUBSCRIBERS[user_id].get("btc_alert", False) else "OFF"
+        gold_status = "ON" if SUBSCRIBERS[user_id].get("gold_alert", False) else "OFF"
+        msg = "Status:\nBTC Alert: " + btc_status + "\nGOLD Alert: " + gold_status
+    else:
+        msg = "Status: NOT SUBSCRIBED"
+    await update.message.reply_text(msg, reply_markup=main_menu())
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "Bantuan\n/start - Mulakan\n/menu - Menu\n/test - Test\n/price - Harga\n/help - Bantuan"
+    msg = "Bantuan\n/start - Mulakan\n/menu - Menu\n/test - Test\n/price - Harga\n/status - Status\n/help - Bantuan"
     await update.message.reply_text(msg, reply_markup=main_menu())
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    user_id = update.effective_user.id
 
     if data == "signal_btc":
         await query.edit_message_text("Loading BTC...")
@@ -104,26 +114,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "carta_gold":
         await query.message.reply_text("Carta GOLD: https://www.tradingview.com/chart/?symbol=XAUUSD", reply_markup=main_menu())
 
-    elif data == "alert_on":
-        user_id = update.effective_user.id
-        context.user_data['alert_enabled'] = True
-        await query.message.reply_text("Alert ON. Anda akan dapat notifikasi bila harga masuk zon.", reply_markup=main_menu())
+    elif data == "btc_alert_on":
+        if user_id not in SUBSCRIBERS:
+            SUBSCRIBERS[user_id] = {"btc_alert": False, "gold_alert": False}
+        SUBSCRIBERS[user_id]["btc_alert"] = True
+        await query.message.reply_text("BTC Alert ON. Anda akan dapat notifikasi BTC.", reply_markup=main_menu())
 
-    elif data == "alert_off":
-        user_id = update.effective_user.id
-        context.user_data['alert_enabled'] = False
-        await query.message.reply_text("Alert OFF. Anda tidak akan dapat notifikasi.", reply_markup=main_menu())
+    elif data == "btc_alert_off":
+        if user_id not in SUBSCRIBERS:
+            SUBSCRIBERS[user_id] = {"btc_alert": False, "gold_alert": False}
+        SUBSCRIBERS[user_id]["btc_alert"] = False
+        await query.message.reply_text("BTC Alert OFF.", reply_markup=main_menu())
+
+    elif data == "gold_alert_on":
+        if user_id not in SUBSCRIBERS:
+            SUBSCRIBERS[user_id] = {"btc_alert": False, "gold_alert": False}
+        SUBSCRIBERS[user_id]["gold_alert"] = True
+        await query.message.reply_text("GOLD Alert ON. Anda akan dapat notifikasi GOLD.", reply_markup=main_menu())
+
+    elif data == "gold_alert_off":
+        if user_id not in SUBSCRIBERS:
+            SUBSCRIBERS[user_id] = {"btc_alert": False, "gold_alert": False}
+        SUBSCRIBERS[user_id]["gold_alert"] = False
+        await query.message.reply_text("GOLD Alert OFF.", reply_markup=main_menu())
 
     elif data == "subscribe":
-        user_id = update.effective_user.id
-        SUBSCRIBERS.add(user_id)
-        context.user_data['alert_enabled'] = True
-        await query.message.reply_text("Berjaya Subscribe. Alert setiap 5 minit.", reply_markup=main_menu())
+        SUBSCRIBERS[user_id] = {"btc_alert": True, "gold_alert": True}
+        await query.message.reply_text("Berjaya Subscribe. Alert BTC & GOLD ON.", reply_markup=main_menu())
 
     elif data == "unsubscribe":
-        user_id = update.effective_user.id
-        SUBSCRIBERS.discard(user_id)
-        context.user_data['alert_enabled'] = False
+        if user_id in SUBSCRIBERS:
+            del SUBSCRIBERS[user_id]
         await query.message.reply_text("Berjaya Unsubscribe.", reply_markup=main_menu())
 
 async def check_zone_and_alert(app):
@@ -137,10 +158,10 @@ async def check_zone_and_alert(app):
         btc_active, btc_type, btc_entry, btc_tp, btc_sl = check_zone_alert("BTC-USD", "BTC")
         gold_active, gold_type, gold_entry, gold_tp, gold_sl = check_zone_alert("GC=F", "GOLD")
 
-        for user_id in SUBSCRIBERS:
+        for user_id, settings in SUBSCRIBERS.items():
             try:
                 # Check BTC Zone
-                if btc_active:
+                if settings.get("btc_alert", False) and btc_active:
                     key = "btc_" + str(btc_type)
                     if key not in ALERT_CACHE or ALERT_CACHE[key] == False:
                         alert_msg = "🚨 ALERT ZON ENTRY AKTIF BTC\nZon: " + str(btc_type) + "\nEntry: $" + str(btc_entry) + "\nTP: $" + str(btc_tp) + "\nSL: $" + str(btc_sl) + "\n\nHarga semasa berada dalam zon!"
@@ -152,7 +173,7 @@ async def check_zone_and_alert(app):
                     ALERT_CACHE["btc_SELL"] = False
 
                 # Check GOLD Zone
-                if gold_active:
+                if settings.get("gold_alert", False) and gold_active:
                     key = "gold_" + str(gold_type)
                     if key not in ALERT_CACHE or ALERT_CACHE[key] == False:
                         alert_msg = "🚨 ALERT ZON ENTRY AKTIF GOLD\nZon: " + str(gold_type) + "\nEntry: $" + str(gold_entry) + "\nTP: $" + str(gold_tp) + "\nSL: $" + str(gold_sl) + "\n\nHarga semasa berada dalam zon!"
@@ -172,12 +193,14 @@ async def check_zone_and_alert(app):
 def setup_alert_scheduler(app):
     """Setup scheduler untuk check zone setiap 5 minit"""
     scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        lambda: __import__('asyncio').run(check_zone_and_alert(app)),
-        'interval',
-        minutes=5,
-        id='zone_alert'
-    )
+    
+    def run_async():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(check_zone_and_alert(app))
+        loop.close()
+    
+    scheduler.add_job(run_async, 'interval', minutes=5, id='zone_alert')
     scheduler.start()
     print("Alert scheduler started - checking every 5 minutes")
     return scheduler
