@@ -44,26 +44,28 @@ def detect_bos(df, st_dir):
     else:
         return "⏳ Tiada BOS"
 
+def find_column(df, partial_name):
+    """Cari kolom yang mengandungi teks tertentu"""
+    for col in df.columns:
+        if partial_name in str(col):
+            return col
+    return None
+
 def generate_signal(symbol="GC=F", name="GOLD"):
     try:
         df = get_data(symbol)
         if df is None or len(df) < 10:
             return "❌ Data " + name + " tidak mencukupi."
 
-        # --- Supertrend (Auto-detect kolom) ---
+        # --- Supertrend ---
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=10, multiplier=3)
         df = pd.concat([df, st], axis=1)
         
-        st_col = None
-        st_dir_col = None
-        for col in df.columns:
-            if 'SUPERT_' in col and 'SUPERTd' not in col:
-                st_col = col
-            elif 'SUPERTd' in col:
-                st_dir_col = col
+        st_col = find_column(df, 'SUPERT_')
+        st_dir_col = find_column(df, 'SUPERTd')
         
         if st_col is None or st_dir_col is None:
-            return "❌ Ralat: Tidak boleh jumpa kolom Supertrend. Kolom sedia ada: " + str(list(df.columns))
+            return "❌ Ralat: Tidak jumpa kolom Supertrend."
 
         price  = round(float(df['Close'].iloc[-1]), 2)
         st_val = round(float(df[st_col].iloc[-1]), 2)
@@ -72,7 +74,7 @@ def generate_signal(symbol="GC=F", name="GOLD"):
         trend  = "BULLISH 🟢" if st_dir == 1 else "BEARISH 🔴"
         signal = "BUY 🟢" if st_dir == 1 else "SELL 🔴"
 
-        # RSI
+        # --- RSI ---
         df['RSI'] = ta.rsi(df['Close'], length=14)
         rsi = round(float(df['RSI'].iloc[-1]), 2)
         if rsi >= 70:
@@ -82,35 +84,35 @@ def generate_signal(symbol="GC=F", name="GOLD"):
         else:
             rsi_status = "🟡 Neutral (" + str(rsi) + ")"
 
-        # Bollinger Bands
+        # --- Bollinger Bands (Auto-detect) ---
         bb = ta.bbands(df['Close'], length=20, std=2)
         df = pd.concat([df, bb], axis=1)
-        bb_upper = round(float(df['BBU_20_2.0'].iloc[-1]), 2)
-        bb_lower = round(float(df['BBL_20_2.0'].iloc[-1]), 2)
+        
+        bb_upper_col = find_column(df, 'BBU_')
+        bb_lower_col = find_column(df, 'BBL_')
+        
+        if bb_upper_col is None or bb_lower_col is None:
+            bb_upper = bb_lower = price
+        else:
+            bb_upper = round(float(df[bb_upper_col].iloc[-1]), 2)
+            bb_lower = round(float(df[bb_lower_col].iloc[-1]), 2)
 
-        # EMA
+        # --- EMA ---
         df['EMA9']  = ta.ema(df['Close'], length=9)
         df['EMA21'] = ta.ema(df['Close'], length=21)
         ema9  = round(float(df['EMA9'].iloc[-1]), 2)
         ema21 = round(float(df['EMA21'].iloc[-1]), 2)
         ema_sig = "🟢 BUY (Golden Cross)" if ema9 > ema21 else "🔴 SELL (Death Cross)"
 
-        # FVG
+        # --- FVG ---
         fvg_b, fvg_s = detect_fvg(df)
-        if fvg_b:
-            fvg_b_str = "✅ Bullish: $" + f"{fvg_b[0]:,.2f}" + " – $" + f"{fvg_b[1]:,.2f}"
-        else:
-            fvg_b_str = "❌ Tiada Bullish FVG"
+        fvg_b_str = "✅ Bullish: $" + f"{fvg_b[0]:,.2f}" + " – $" + f"{fvg_b[1]:,.2f}" if fvg_b else "❌ Tiada Bullish FVG"
+        fvg_s_str = "✅ Bearish: $" + f"{fvg_s[0]:,.2f}" + " – $" + f"{fvg_s[1]:,.2f}" if fvg_s else "❌ Tiada Bearish FVG"
 
-        if fvg_s:
-            fvg_s_str = "✅ Bearish: $" + f"{fvg_s[0]:,.2f}" + " – $" + f"{fvg_s[1]:,.2f}"
-        else:
-            fvg_s_str = "❌ Tiada Bearish FVG"
-
-        # BOS
+        # --- BOS ---
         bos = detect_bos(df, st_dir)
 
-        # Entry, SL, TP
+        # --- Entry, SL, TP ---
         risk  = 0.005
         ratio = 2.0
         if st_dir == 1:
@@ -124,7 +126,6 @@ def generate_signal(symbol="GC=F", name="GOLD"):
 
         ts = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-        # Bina mesej
         lines = [
             "📊 *SIGNAL ULTIMATE: " + name + "*",
             "",
