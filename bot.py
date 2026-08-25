@@ -1,9 +1,8 @@
 import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from signal import generate_signal, get_price  # Import dari signal.py
+from analyzer import generate_signal, get_price  # ✅ Tukar kepada analyzer
 
-# Token dari Railway atau environment variable
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -21,60 +20,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def test_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Loading... Ambil data pasar...")
-    
     try:
-        # Jana signal untuk BTC dan Gold
         btc_msg = generate_signal("BTC-USD", "BTC")
         gold_msg = generate_signal("GC=F", "GOLD")
-        
-        # Hantar kedua-dua signal
         await update.message.reply_text(btc_msg)
         await update.message.reply_text(gold_msg)
-        
     except Exception as e:
         await update.message.reply_text(f"❌ Ralat: {e}")
 
 async def get_price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Loading... Ambil harga terkini...")
-    
     try:
         btc = get_price("BTC-USD")
         gold = get_price("GC=F")
-        
-        msg = (
-            "💰 *HARGA REAL-TIME*\n\n"
-            f"BTC: ${btc:,.2f}\n"
-            f"GOLD: ${gold:,.2f}\n\n"
-            f"Update: Sekarang"
-        )
+        msg = f"💰 *HARGA REAL-TIME*\n\nBTC: ${btc:,.2f}\nGOLD: ${gold:,.2f}\n\nUpdate: Sekarang"
         await update.message.reply_text(msg)
     except Exception as e:
         await update.message.reply_text(f"❌ Ralat: {e}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Status subscriber (contoh mudah)
-    await update.message.reply_text(
-        "✅ Status: SUBSCRIBED\n"
-        "Anda terima signal setiap jam.\n\n"
-        "Total Subscriber: 1"
-    )
+    await update.message.reply_text("✅ Status: SUBSCRIBED\nAnda terima signal setiap jam.\n\nTotal Subscriber: 1")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Berjaya subscribe! Anda akan terima signal setiap jam.")
+    await update.message.reply_text("✅ Berjaya subscribe!")
 
 async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Berjaya unsubscribe! Anda tidak akan terima signal lagi.")
+    await update.message.reply_text("❌ Berjaya unsubscribe!")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📖 Bantuan:\n\n"
-        "Gunakan perintah di bawah untuk berinteraksi dengan bot.\n"
-        "Semua perintah bermula dengan /"
-    )
+    await update.message.reply_text("📖 Gunakan perintah /start untuk melihat senarai perintah.")
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test_signal))
     app.add_handler(CommandHandler("price", get_price_cmd))
@@ -82,7 +59,6 @@ def main():
     app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe))
     app.add_handler(CommandHandler("help", help_cmd))
-    
     app.run_polling()
 
 if __name__ == "__main__":
