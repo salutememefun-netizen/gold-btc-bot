@@ -15,10 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============================================
 # DATABASE CONFIG
-# ============================================
-# Cuba semua nama variable yang mungkin
 DB_URL = (
     os.getenv("DATABASE_URL") or
     os.getenv("POSTGRES_URL") or
@@ -28,19 +25,19 @@ DB_URL = (
 )
 
 if not DB_URL or DB_URL.strip() == "":
-    logger.error("❌ DATABASE_URL kosong atau tidak dijumpai!")
-    for key in os.environ:
-        if 'DB' in key.upper() or 'POSTGRES' in key.upper():
-            logger.error(f"   Cari: {key} = {os.getenv(key)}")
+    logger.error("❌ DATABASE_URL kosong!")
 else:
-    logger.info(f"✅ Database URL dijumpai!")
+    logger.info("✅ Database URL dijumpai!")
 
 def get_db_connection():
     if not DB_URL or DB_URL.strip() == "":
+        logger.error("❌ Tiada DATABASE_URL!")
         return None
     try:
         import psycopg2
-        return psycopg2.connect(DB_URL)
+        conn = psycopg2.connect(DB_URL)
+        logger.info("✅ Sambung PostgreSQL berjaya!")
+        return conn
     except Exception as e:
         logger.error(f"❌ Ralat DB: {e}")
         return None
@@ -60,6 +57,7 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
+        logger.info("✅ Table subscribers siap!")
         return True
     except Exception as e:
         logger.error(f"❌ Ralat init DB: {e}")
@@ -89,7 +87,10 @@ def remove_subscriber_db(chat_id: int) -> bool:
         return False
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM subscribers WHERE chat_id = %s", (chat_id,))
+        cur.execute(
+            "DELETE FROM subscribers WHERE chat_id = %s",
+            (chat_id,)
+        )
         conn.commit()
         cur.close()
         conn.close()
@@ -113,9 +114,7 @@ def get_all_subscribers() -> list:
         logger.error(f"❌ Ralat get subscribers: {e}")
         return []
 
-# ============================================
 # HARGA LIVE
-# ============================================
 def get_btc_price() -> Optional[float]:
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
@@ -135,9 +134,7 @@ def get_gold_price() -> Optional[float]:
         logger.error(f"❌ Ralat GOLD: {e}")
         return None
 
-# ============================================
 # DATA CANDLES
-# ============================================
 def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 100) -> Optional[List[Dict]]:
     if symbol == "GOLD":
         try:
@@ -176,16 +173,15 @@ def get_binance_candles(symbol: str, interval: str = "1h", limit: int = 100) -> 
             })
         return candles
     except Exception as e:
-        logger.error(f"❌ Ralat Binance candles: {e}")
+        logger.error(f"❌ Ralat Binance: {e}")
         return None
 
-# ============================================
 # INDICATORS
-# ============================================
 def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     if len(prices) < period + 1:
         return None
-    gains, losses = [], []
+    gains = []
+    losses = []
     for i in range(1, len(prices)):
         diff = prices[i] - prices[i-1]
         gains.append(max(diff, 0))
@@ -195,7 +191,8 @@ def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
+    result = 100 - (100 / (1 + rs))
+    return round(result, 2)
 
 def calculate_ema(prices: List[float], period: int) -> Optional[float]:
     if len(prices) < period:
@@ -236,9 +233,7 @@ def calculate_atr(candles: List[dict], period: int = 14) -> Optional[float]:
         tr_list.append(tr)
     return round(sum(tr_list[-period:]) / period, 2)
 
-# ============================================
 # ANALISIS UTAMA
-# ============================================
 def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
     candles = get_binance_candles(asset_name, "1h", 50)
     if not candles:
@@ -263,10 +258,10 @@ def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
             reason = f"RSI Overbought ({rsi}) + MACD Negatif ({macd})"
         elif lower is not None and price < lower and rsi < 40:
             signal = "BUY"
-            reason = f"Harga sentuh Bollinger Lower ({lower:.2f}) + RSI Rendah ({rsi})"
+            reason = f"Bollinger Lower ({lower:.2f}) + RSI Rendah ({rsi})"
         elif upper is not None and price > upper and rsi > 60:
             signal = "SELL"
-            reason = f"Harga sentuh Bollinger Upper ({upper:.2f}) + RSI Tinggi ({rsi})"
+            reason = f"Bollinger Upper ({upper:.2f}) + RSI Tinggi ({rsi})"
 
     return signal, reason
 
