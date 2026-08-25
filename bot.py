@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Main Bot Telegram untuk Trading GOLD/BTC
+Guna Environment Variable dari Railway
 """
 
 import os
@@ -26,13 +27,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================
-# TOKEN & CONFIG (HARD CODED)
+# TOKEN & CONFIG (AMBIL DARI RAILWAY ENV)
 # ============================================
-# Gantikan dengan token dari @BotFather
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE" 
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-    logger.error("❌ Sila masukkan BOT_TOKEN yang betul di dalam kod!")
+if not BOT_TOKEN:
+    logger.error("❌ ERROR: BOT_TOKEN tidak dijumpai di Railway Environment Variables!")
     exit(1)
 
 # ============================================
@@ -72,7 +72,7 @@ async def test_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btc = get_btc_price()
         gold = get_gold_price()
         if not btc or not gold:
-            await update.message.reply_text("❌ Gagal ambil data.")
+            await update.message.reply_text("❌ Gagal ambil data.", parse_mode='Markdown')
             return
         msg = (
             f"🧪 *TEST ALERT*\\n\\n"
