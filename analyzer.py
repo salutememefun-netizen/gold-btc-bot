@@ -3,16 +3,8 @@ import os
 import pandas as pd
 import numpy as np
 
-# ============================================================
-# KONFIGURASI
-# ============================================================
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-# Faktor pendaraban untuk XAUUSDc (Cent Account)
 GOLD_MULTIPLIER = 100
-
-# ============================================================
-# FUNGSI AMBIL HARGA
-# ============================================================
 
 def get_price(symbol):
     s = str(symbol).upper()
@@ -23,8 +15,6 @@ def get_price(symbol):
     return 0
 
 def get_gold_price():
-    """Ambil harga Gold dan darab dengan 100 untuk XAUUSDc."""
-    # Cuba Finnhub
     if FINNHUB_API_KEY:
         try:
             r = requests.get(f"https://finnhub.io/api/v1/quote?symbol=XAUUSD&token={FINNHUB_API_KEY}", timeout=10)
@@ -35,8 +25,6 @@ def get_gold_price():
                 return price
         except Exception as e:
             print(f"⚠️ Finnhub gagal: {e}")
-    
-    # Cuba Yahoo Finance
     try:
         r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
@@ -45,11 +33,9 @@ def get_gold_price():
         return price
     except Exception as e:
         print(f"⚠️ Yahoo gagal: {e}")
-    
     return 0
 
 def get_btc_price():
-    """Ambil harga BTC (tiada multiplier)."""
     if FINNHUB_API_KEY:
         try:
             r = requests.get(f"https://finnhub.io/api/v1/quote?symbol=BINANCE:BTCUSDT&token={FINNHUB_API_KEY}", timeout=10)
@@ -66,7 +52,6 @@ def get_btc_price():
     return 0
 
 def get_historical_data(symbol):
-    """Ambil data sejarah untuk analisis teknikal."""
     sym = "GC=F" if str(symbol).upper() in ["GOLD", "GC=F", "XAUUSD", "XAUUSDC"] else "BTC-USD"
     try:
         r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=15m&range=5d", headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
@@ -81,10 +66,6 @@ def get_historical_data(symbol):
         return pd.DataFrame({"close": list(c), "high": list(h), "low": list(l)})
     except:
         return None
-
-# ============================================================
-# FUNGSI ANALISIS TEKNIKAL
-# ============================================================
 
 def calculate_rsi(prices, period=14):
     try:
@@ -107,3 +88,18 @@ def calculate_ema(prices, period):
 
 def calculate_bollinger(prices, period=20):
     try:
+        p = pd.Series(prices, dtype=float)
+        m = p.rolling(period).mean()
+        s = p.rolling(period).std()
+        upper = round(float((m + s * 2).dropna().iloc[-1]), 2)
+        lower = round(float((m - s * 2).dropna().iloc[-1]), 2)
+        return upper, lower
+    except:
+        return 0.0, 0.0
+
+def calculate_supertrend(df, period=10, mult=3):
+    try:
+        if len(df) < period + 1:
+            return "NEUTRAL 🟡"
+        h = pd.Series(df["high"].values, dtype=float)
+        l = pd.Series(df["low"].values
