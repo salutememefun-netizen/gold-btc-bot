@@ -1,12 +1,15 @@
+#!/usr/bin/env python3
+"""
+Helper functions untuk Bot Trading
+Database, Indicators, API Data
+"""
+
 import requests
 import logging
 import math
 import psycopg2
 import os
 from typing import Optional, List, Tuple, Dict
-from dotenv import load_dotenv
-
-load_dotenv()
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -14,11 +17,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# DATABASE
-DB_URL = os.getenv("DATABASE_URL")
+# ============================================
+# DATABASE CONFIG (HARD CODED)
+# ============================================
+# Gantikan string di bawah dengan URL PostgreSQL Railway anda
+# Contoh: postgres://user:pass@host:port/dbname
+DB_URL = "postgresql://postgres:YOUR_PASSWORD_HERE@ep-xxxx-xxxx.us-east-2.aws.neon.tech:5432/your_database_name"
 
 def get_db_connection():
-    if not DB_URL:
+    if not DB_URL or DB_URL == "postgresql://postgres:YOUR_PASSWORD_HERE@...":
+        logger.warning("DATABASE_URL belum diset dengan betul!")
         return None
     try:
         return psycopg2.connect(DB_URL)
@@ -221,7 +229,6 @@ def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
     price = candles[-1]["close"]
     prices = [c["close"] for c in candles]
     
-    # Kira indikator
     rsi = calculate_rsi(prices, 14)
     macd, ema12 = calculate_macd(prices)
     sma, upper, lower = calculate_bollinger_bands(prices, 20)
@@ -230,21 +237,15 @@ def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
     signal = "WAIT"
     reason = "Tiada setup yang kuat."
     
-    # Logik BUY
     if rsi and rsi < 30 and macd and macd > 0:
         signal = "BUY"
         reason = f"RSI Oversold ({rsi}) + MACD Positif ({macd})"
-    
-    # Logik SELL
     elif rsi and rsi > 70 and macd and macd < 0:
         signal = "SELL"
         reason = f"RSI Overbought ({rsi}) + MACD Negatif ({macd})"
-    
-    # Bollinger Bands
     elif price and lower and price < lower and rsi and rsi < 40:
         signal = "BUY"
         reason = f"Harga sentuh Bollinger Lower ({lower:.2f}) + RSI Rendah ({rsi})"
-    
     elif price and upper and price > upper and rsi and rsi > 60:
         signal = "SELL"
         reason = f"Harga sentuh Bollinger Upper ({upper:.2f}) + RSI Tinggi ({rsi})"
@@ -253,9 +254,7 @@ def analyze_market_strategies(asset_name: str) -> Tuple[str, str]:
 
 def generate_ultimate_signal(asset_name: str, price: float) -> str:
     signal_type, reason = analyze_market_strategies(asset_name)
-    
     fmt = lambda x: f"${x:,.2f}" if isinstance(x, float) else x
-    
     msg = (
         f"⚡ *SIGNAL ULTIMATE: {asset_name}*\n\n"
         f"💵 Harga: {fmt(price)}\n\n"
@@ -264,6 +263,3 @@ def generate_ultimate_signal(asset_name: str, price: float) -> str:
         f"⚠️ Jangan entry buta. Gunakan pengurusan modal!"
     )
     return msg
-
-# ALIAS
-gold_market_operators = generate_ultimate_signal
