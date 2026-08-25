@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-GOLD_MULTIPLIER = 100
+GOLD_MULTIPLIER = 1
 
 def get_price(symbol):
     s = str(symbol).upper()
