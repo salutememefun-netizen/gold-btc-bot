@@ -87,9 +87,12 @@ def calculate_supertrend(df, period=10, mult=3):
 def generate_signal(symbol, name):
     price = get_price(symbol)
     if price == 0: return "❌ Gagal ambil harga. Semak sambungan."
+    
     df = get_historical_data(symbol)
-    if not df or len(df) < 20:
-        return f"{'🥇' if name=='GOLD' else '₿'} *SIGNAL {name}*\n💰 Harga: ${price}\n\n⚠️ Data tidak cukup."
+    
+    # BETUL: Semak df dengan cara yang betul
+    if df is None or len(df) < 20:
+        return f"{'🥇' if name=='GOLD' else '₿'} *SIGNAL {name}*\n💰 Harga: ${price}\n\n⚠️ Data tidak cukup untuk analisis penuh."
     
     closes = df["close"].tolist()
     rsi = calculate_rsi(closes)
@@ -106,7 +109,13 @@ def generate_signal(symbol, name):
     trend = "BULLISH" if buy_sc > sell_sc else "BEARISH" if sell_sc > buy_sc else "NEUTRAL"
     
     sl_p, tp_p = (10, 20) if name=="GOLD" else (300, 600)
-    ent, sl, tp = price, round(price - sl_p, 2), round(price + tp_p, 2) if "BUY" in sig else round(price + sl_p, 2), round(price - tp_p, 2)
+    ent = price
+    if "BUY" in sig:
+        sl, tp = round(price - sl_p, 2), round(price + tp_p, 2)
+    elif "SELL" in sig:
+        sl, tp = round(price + sl_p, 2), round(price - tp_p, 2)
+    else:
+        sl, tp = round(price - sl_p, 2), round(price + tp_p, 2)
     
     txt = f"{'🥇' if name=='GOLD' else '₿'} *SIGNAL {name}*\n💰 Harga: ${price}\n\n"
     txt += f"⚡ Supertrend: {st}\n📊 RSI: {rsi}\n📉 Bollinger: {bb_u}/{bb_l}\n📈 EMA: {ema9}/{ema21}\n\n"
@@ -118,8 +127,13 @@ def generate_signal(symbol, name):
 def check_zone_alert(symbol, name):
     price = get_price(symbol)
     if price == 0: return False, None, 0, 0, 0
+    
     df = get_historical_data(symbol)
-    if not df: return False, None, 0, 0, 0
+    
+    # BETUL: Semak df dengan cara yang betul
+    if df is None or len(df) < 20:
+        return False, None, 0, 0, 0
+        
     closes = df["close"].tolist()
     rsi = calculate_rsi(closes)
     ema9, ema21 = calculate_ema(closes, 9), calculate_ema(closes, 21)
