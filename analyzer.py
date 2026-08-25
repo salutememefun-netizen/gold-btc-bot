@@ -12,7 +12,7 @@ def get_data(symbol, interval="15m", period="5d"):
             return None
         return df
     except Exception as e:
-        print(f"Ralat get_data: {e}")
+        print("Ralat get_data:", e)
         return None
 
 def get_price(symbol):
@@ -50,13 +50,24 @@ def generate_signal(symbol="GC=F", name="GOLD"):
         if df is None or len(df) < 10:
             return "❌ Data " + name + " tidak mencukupi."
 
-        # Supertrend
+        # --- Supertrend (Auto-detect kolom) ---
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=10, multiplier=3)
         df = pd.concat([df, st], axis=1)
+        
+        st_col = None
+        st_dir_col = None
+        for col in df.columns:
+            if 'SUPERT_' in col and 'SUPERTd' not in col:
+                st_col = col
+            elif 'SUPERTd' in col:
+                st_dir_col = col
+        
+        if st_col is None or st_dir_col is None:
+            return "❌ Ralat: Tidak boleh jumpa kolom Supertrend. Kolom sedia ada: " + str(list(df.columns))
 
         price  = round(float(df['Close'].iloc[-1]), 2)
-        st_val = round(float(df['SUPERT_10_3.0'].iloc[-1]), 2)
-        st_dir = int(df['SUPERTd_10_3.0'].iloc[-1])
+        st_val = round(float(df[st_col].iloc[-1]), 2)
+        st_dir = int(df[st_dir_col].iloc[-1])
 
         trend  = "BULLISH 🟢" if st_dir == 1 else "BEARISH 🔴"
         signal = "BUY 🟢" if st_dir == 1 else "SELL 🔴"
@@ -113,7 +124,7 @@ def generate_signal(symbol="GC=F", name="GOLD"):
 
         ts = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-        # Bina mesej baris per baris (TIADA f-string kompleks)
+        # Bina mesej
         lines = [
             "📊 *SIGNAL ULTIMATE: " + name + "*",
             "",
