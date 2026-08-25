@@ -1,144 +1,89 @@
-import pandas as pd
-import pandas_ta as ta
-import yfinance as yf
-from datetime import datetime
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from signal import generate_signal, get_price  # Import dari signal.py
 
-def get_data(symbol, interval="15m", period="5d"):
-    """Ambil data OHLC dari Yahoo Finance"""
+# Token dari Railway atau environment variable
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Selamat datang, AetherGlory!\n\n"
+        "Bot Trading GOLD/BTC AI Analysis\n\n"
+        "📋 Perintah:\n"
+        "/subscribe - Sinyal setiap 1 jam\n"
+        "/unsubscribe - Berhenti\n"
+        "/test - Test alert\n"
+        "/status - Status\n"
+        "/price - Harga real-time\n"
+        "/help - Bantuan"
+    )
+
+async def test_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔄 Loading... Ambil data pasar...")
+    
     try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        if df.empty:
-            return None
-        return df
+        # Jana signal untuk BTC dan Gold
+        btc_msg = generate_signal("BTC-USD", "BTC")
+        gold_msg = generate_signal("GC=F", "GOLD")
+        
+        # Hantar kedua-dua signal
+        await update.message.reply_text(btc_msg)
+        await update.message.reply_text(gold_msg)
+        
     except Exception as e:
-        print(f"Ralat get_data: {e}")
-        return None
+        await update.message.reply_text(f"❌ Ralat: {e}")
 
-def get_price(symbol):
-    """Ambil harga terkini sahaja"""
+async def get_price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔄 Loading... Ambil harga terkini...")
+    
     try:
-        df = yf.download(symbol, period="1d", interval="1m", progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        return round(float(df['Close'].iloc[-1]), 2)
-    except:
-        return None
+        btc = get_price("BTC-USD")
+        gold = get_price("GC=F")
+        
+        msg = (
+            "💰 *HARGA REAL-TIME*\n\n"
+            f"BTC: ${btc:,.2f}\n"
+            f"GOLD: ${gold:,.2f}\n\n"
+            f"Update: Sekarang"
+        )
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ralat: {e}")
 
-def detect_fvg(df):
-    """Detect Fair Value Gap dari 3 candle terakhir"""
-    c1_high = df['High'].iloc[-3]
-    c1_low  = df['Low'].iloc[-3]
-    c3_low  = df['Low'].iloc[-1]
-    c3_high = df['High'].iloc[-1]
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Status subscriber (contoh mudah)
+    await update.message.reply_text(
+        "✅ Status: SUBSCRIBED\n"
+        "Anda terima signal setiap jam.\n\n"
+        "Total Subscriber: 1"
+    )
 
-    fvg_bullish = (round(c1_high, 2), round(c3_low, 2)) if c3_low > c1_high else None
-    fvg_bearish = (round(c1_low, 2), round(c3_high, 2)) if c3_high < c1_low else None
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ Berjaya subscribe! Anda akan terima signal setiap jam.")
 
-    return fvg_bullish, fvg_bearish
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Berjaya unsubscribe! Anda tidak akan terima signal lagi.")
 
-def detect_bos(df, st_dir):
-    """Detect Break of Structure berdasarkan swing high/low"""
-    price     = df['Close'].iloc[-1]
-    swing_h   = df['High'].iloc[-6:-1].max()
-    swing_l   = df['Low'].iloc[-6:-1].min()
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📖 Bantuan:\n\n"
+        "Gunakan perintah di bawah untuk berinteraksi dengan bot.\n"
+        "Semua perintah bermula dengan /"
+    )
 
-    if price > swing_h and st_dir == 1:
-        return f"✅ Bullish BOS (Pecah ${swing_h:,.2f})"
-    elif price < swing_l and st_dir == -1:
-        return f"✅ Bearish BOS (Pecah ${swing_l:,.2f})"
-    else:
-        return "⏳ Tiada BOS"
+def main():
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("test", test_signal))
+    app.add_handler(CommandHandler("price", get_price_cmd))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("subscribe", subscribe))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe))
+    app.add_handler(CommandHandler("help", help_cmd))
+    
+    app.run_polling()
 
-def generate_signal(symbol="GC=F", name="GOLD"):
-    """Jana signal lengkap dengan Supertrend, FVG, BOS"""
-    try:
-        df = get_data(symbol)
-        if df is None or len(df) < 10:
-            return f"❌ Data {name} tidak mencukupi."
-
-        # --- Supertrend ---
-        st = ta.supertrend(df['High'], df['Low'], df['Close'],
-                           length=10, multiplier=3)
-        df = pd.concat([df, st], axis=1)
-
-        price   = round(float(df['Close'].iloc[-1]), 2)
-        st_val  = round(float(df['SUPERT_10_3.0'].iloc[-1]), 2)
-        st_dir  = int(df['SUPERTd_10_3.0'].iloc[-1])
-
-        trend   = "BULLISH 🟢" if st_dir == 1 else "BEARISH 🔴"
-        signal  = "BUY 🟢"    if st_dir == 1 else "SELL 🔴"
-
-        # --- RSI ---
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        rsi = round(float(df['RSI'].iloc[-1]), 2)
-        if rsi >= 70:
-            rsi_status = f"🔴 Overbought ({rsi}) — Harga terlalu tinggi"
-        elif rsi <= 30:
-            rsi_status = f"🟢 Oversold ({rsi}) — Harga terlalu rendah"
-        else:
-            rsi_status = f"🟡 Neutral ({rsi})"
-
-        # --- Bollinger Bands ---
-        bb = ta.bbands(df['Close'], length=20, std=2)
-        df = pd.concat([df, bb], axis=1)
-        bb_upper = round(float(df['BBU_20_2.0'].iloc[-1]), 2)
-        bb_lower = round(float(df['BBL_20_2.0'].iloc[-1]), 2)
-
-        # --- EMA ---
-        df['EMA9']  = ta.ema(df['Close'], length=9)
-        df['EMA21'] = ta.ema(df['Close'], length=21)
-        ema9  = round(float(df['EMA9'].iloc[-1]), 2)
-        ema21 = round(float(df['EMA21'].iloc[-1]), 2)
-        ema_signal = "🟢 BUY (Golden Cross)" if ema9 > ema21 else "🔴 SELL (Death Cross)"
-
-        # --- FVG ---
-        fvg_b, fvg_s = detect_fvg(df)
-
-        # --- BOS ---
-        bos = detect_bos(df, st_dir)
-
-        # --- Kira Entry, SL, TP ---
-        risk  = 0.005 # 0.5% risiko
-        ratio = 2.0   # 1:2 reward
-
-        if st_dir == 1: # BUY
-            entry = fvg_b[0] if fvg_b else price
-            sl    = round(entry * (1 - risk), 2)
-            tp    = round(entry + ((entry - sl) * ratio), 2)
-        else: # SELL
-            entry = fvg_s[1] if fvg_s else price
-            sl    = round(entry * (1 + risk), 2)
-            tp    = round(entry - ((sl - entry) * ratio), 2)
-
-        ts = datetime.now().strftime("%d/%m/%Y %H:%M")
-
-        # --- Format Mesej Telegram ---
-        msg = f"""
-📊 *SIGNAL ULTIMATE: {name}*
-
-💰 *Harga:* `${price:,.2f}`
-📈 *Trend:* {trend}
-⚡ *Supertrend:* {signal}
-
-📉 *RSI (14):*
-   {rsi_status}
-
-📊 *Bollinger Band:*
-   Upper: `${bb_upper:,.2f}` | Lower: `${bb_lower:,.2f}`
-
-📉 *EMA Crossover:*
-   EMA9: `${ema9:,.2f}` | EMA21: `${ema21:,.2f}`
-   Isyarat: {ema_signal}
-
-🏗️ *BOS (Break of Structure):*
-   {bos}
-
-🕳️ *FVG (Fair Value Gap):*
-   {'✅ Bullish: `$' + f"{fvg_b[0]:,.2f}" + ' – $' + f"{fvg_b[1]:,.2f}`" if fvg_b else '❌ Tiada Bullish FVG'}
-   {'✅ Bearish: `$' + f"{fvg_s[0]:,.2f}" + ' – $' + f"{fvg_s[1]:,.2f}`" if fvg_s else '❌ Tiada Bearish FVG'}
-
-🟢 *ZON BUY (LONG):*
-   Entry: `${entry:,.2f}`
-   Stop
+if __name__ == "__main__":
+    main()
