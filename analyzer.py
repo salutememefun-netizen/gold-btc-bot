@@ -3,8 +3,20 @@ import os
 import pandas as pd
 import numpy as np
 
+# ============================================================
+# KONFIGURASI
+# ============================================================
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-GOLD_MULTIPLIER = 1
+
+# BEZA HARGA ANTARA BOT DAN MT5 ANDA
+# Nilai ini kena diupdate manual di Railway Variables
+# Contoh: Jika harga bot $4691 dan MT5 $4644, beza = 47
+# Guna format float: 47.0
+PRICE_OFFSET = float(os.getenv("PRICE_OFFSET", "46.77"))
+
+# ============================================================
+# FUNGSI AMBIL HARGA
+# ============================================================
 
 def get_price(symbol):
     s = str(symbol).upper()
@@ -15,223 +27,16 @@ def get_price(symbol):
     return 0
 
 def get_gold_price():
+    """Ambil harga Gold dari Finnhub/Yahoo."""
     if FINNHUB_API_KEY:
         try:
             r = requests.get(f"https://finnhub.io/api/v1/quote?symbol=XAUUSD&token={FINNHUB_API_KEY}", timeout=10)
             p = r.json().get("c", 0)
             if p and float(p) > 0:
-                price = round(float(p) * GOLD_MULTIPLIER, 2)
+                price = round(float(p), 2)
+                print(f"✅ Gold dari Finnhub: ${price}")
                 return price
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Finnhub gagal: {e}")
     try:
-        r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
-        return round(float(p) * GOLD_MULTIPLIER, 2)
-    except:
-        pass
-    return 0
-
-def get_btc_price():
-    if FINNHUB_API_KEY:
-        try:
-            r = requests.get(f"https://finnhub.io/api/v1/quote?symbol=BINANCE:BTCUSDT&token={FINNHUB_API_KEY}", timeout=10)
-            p = r.json().get("c", 0)
-            if p and float(p) > 0:
-                return round(float(p), 2)
-        except:
-            pass
-    try:
-        r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", timeout=10)
-        return round(float(r.json()["bitcoin"]["usd"]), 2)
-    except:
-        pass
-    return 0
-
-def get_historical_data(symbol):
-    sym = "GC=F" if str(symbol).upper() in ["GOLD", "GC=F", "XAUUSD", "XAUUSDC"] else "BTC-USD"
-    try:
-        r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=15m&range=5d", headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        d = r.json()["chart"]["result"][0]
-        q = d["indicators"]["quote"][0]
-        closes, highs, lows = q["close"], q["high"], q["low"]
-        clean = [(closes[i], highs[i], lows[i]) for i in range(len(closes)) if closes[i] and highs[i] and lows[i]]
-        if len(clean) < 20:
-            return None
-        c, h, l = zip(*clean)
-        return pd.DataFrame({"close": list(c), "high": list(h), "low": list(l)})
-    except:
-        return None
-
-def calculate_rsi(prices, period=14):
-    try:
-        if len(prices) < period + 1:
-            return 50.0
-        p = pd.Series(prices, dtype=float)
-        d = p.diff()
-        g = d.where(d > 0, 0.0)
-        lo = -d.where(d < 0, 0.0)
-        rs = g.rolling(period).mean() / (lo.rolling(period).mean() + 1e-10)
-        return round((100 - 100 / (1 + rs)).dropna().iloc[-1], 2)
-    except:
-        return 50.0
-
-def calculate_ema(prices, period):
-    try:
-        return round(float(pd.Series(prices, dtype=float).ewm(span=period, adjust=False).mean().iloc[-1]), 2)
-    except:
-        return 0.0
-
-def calculate_bollinger(prices, period=20):
-    try:
-        p = pd.Series(prices, dtype=float)
-        m = p.rolling(period).mean()
-        s = p.rolling(period).std()
-        return round(float((m + s*2).dropna().iloc[-1]), 2), round(float((m - s*2).dropna().iloc[-1]), 2)
-    except:
-        return 0.0, 0.0
-
-def calculate_supertrend(df, period=10, mult=3):
-    try:
-        if len(df) < period + 1:
-            return "NEUTRAL 🟡"
-        h = pd.Series(df["high"].values, dtype=float)
-        l = pd.Series(df["low"].values, dtype=float)
-        c = pd.Series(df["close"].values, dtype=float)
-        tr = pd.concat([h-l, (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(period).mean()
-        ub = (h+l)/2 + mult*atr
-        lb = (h+l)/2 - mult*atr
-        dr = [1]
-        for i in range(1, len(c)):
-            if pd.isna(atr.iloc[i]):
-                dr.append(dr[-1])
-            elif c.iloc[i] > ub.iloc[i-1]:
-                dr.append(1)
-            elif c.iloc[i] < lb.iloc[i-1]:
-                dr.append(-1)
-            else:
-                dr.append(dr[-1])
-        return "BULLISH 🟢" if dr[-1] == 1 else "BEARISH 🔴"
-    except:
-        return "NEUTRAL 🟡"
-
-def generate_signal(symbol, name):
-    price = get_price(symbol)
-    if price == 0:
-        return "❌ Gagal ambil harga. Semak sambungan."
-
-    df = get_historical_data(symbol)
-    if df is None or len(df) < 20:
-        return (
-            f"{'🥇' if name=='GOLD' else '₿'} *SIGNAL {name}*\n"
-            f"💰 Harga: ${price}\n\n"
-            f"⚠️ Data tidak cukup."
-        )
-
-    closes = df["close"].tolist()
-    rsi = calculate_rsi(closes)
-    ema9 = calculate_ema(closes, 9)
-    ema21 = calculate_ema(closes, 21)
-    bb_u, bb_l = calculate_bollinger(closes)
-    st = calculate_supertrend(df)
-
-    # Tentukan signal
-    ema_sig = "BUY" if ema9 > ema21 else "SELL" if ema9 < ema21 else "HOLD"
-    buy_sc = (1 if ema_sig=="BUY" else 0) + (1 if rsi > 55 else 0) + (1 if st=="BULLISH 🟢" else 0)
-    sell_sc = (1 if ema_sig=="SELL" else 0) + (1 if rsi < 45 else 0) + (1 if st=="BEARISH 🔴" else 0)
-    sig = "🟢 BUY" if buy_sc > sell_sc else "🔴 SELL" if sell_sc > buy_sc else "🟡 HOLD"
-    trend = "BULLISH" if buy_sc > sell_sc else "BEARISH" if sell_sc > buy_sc else "NEUTRAL"
-
-    sl_p = 10 if name == "GOLD" else 300
-    tp_p = 20 if name == "GOLD" else 600
-
-    if "BUY" in sig:
-        # Zone BUY: Entry dekat Lower Bollinger (support)
-        entry = round(bb_l + (price - bb_l) * 0.3, 2)
-        sl = round(entry - sl_p, 2)
-        tp = round(entry + tp_p, 2)
-        zon = "🟢 ZON BUY (LONG)"
-    elif "SELL" in sig:
-        # Zone SELL: Entry dekat Upper Bollinger (resistance)
-        entry = round(bb_u - (bb_u - price) * 0.3, 2)
-        sl = round(entry + sl_p, 2)
-        tp = round(entry - tp_p, 2)
-        zon = "🔴 ZON SELL (SHORT)"
-    else:
-        # HOLD: Tunjuk kedua-dua zone
-        entry_buy = round(bb_l + (price - bb_l) * 0.3, 2)
-        entry_sell = round(bb_u - (bb_u - price) * 0.3, 2)
-        sl_buy = round(entry_buy - sl_p, 2)
-        tp_buy = round(entry_buy + tp_p, 2)
-        sl_sell = round(entry_sell + sl_p, 2)
-        tp_sell = round(entry_sell - tp_p, 2)
-        zon = "🟡 NEUTRAL"
-
-        e = "🥇" if name == "GOLD" else "₿"
-        msg = f"{e} *SIGNAL {name}*\n"
-        msg += f"💰 Harga Semasa: ${price}\n\n"
-        msg += f"⚡ Supertrend: {st}\n"
-        msg += f"📊 RSI (14): {rsi}\n"
-        msg += f"📉 Bollinger: {bb_u} / {bb_l}\n"
-        msg += f"📈 EMA: {ema9} / {ema21}\n\n"
-        msg += f"🎯 *SIGNAL: 🟡 HOLD*\n"
-        msg += f"📈 *Trend: NEUTRAL*\n\n"
-        msg += f"🟢 *ZON BUY (LONG):*\n"
-        msg += f"   Entry: ${entry_buy}\n"
-        msg += f"   SL: ${sl_buy}\n"
-        msg += f"   TP: ${tp_buy}\n\n"
-        msg += f"🔴 *ZON SELL (SHORT):*\n"
-        msg += f"   Entry: ${entry_sell}\n"
-        msg += f"   SL: ${sl_sell}\n"
-        msg += f"   TP: ${tp_sell}\n\n"
-        msg += f"⚠️ *NOTA:* Harga pasaran global.\n"
-        msg += f"Semak MT5 anda sebelum entry."
-        return msg
-
-    e = "🥇" if name == "GOLD" else "₿"
-    msg = f"{e} *SIGNAL {name}*\n"
-    msg += f"💰 Harga Semasa: ${price}\n\n"
-    msg += f"⚡ Supertrend: {st}\n"
-    msg += f"📊 RSI (14): {rsi}\n"
-    msg += f"📉 Bollinger: {bb_u} / {bb_l}\n"
-    msg += f"📈 EMA: {ema9} / {ema21}\n\n"
-    msg += f"🎯 *SIGNAL: {sig}*\n"
-    msg += f"📈 *Trend: {trend}*\n\n"
-    msg += f"{zon}:\n"
-    msg += f"   Entry: ${entry}\n"
-    msg += f"   SL: ${sl}\n"
-    msg += f"   TP: ${tp}\n\n"
-    msg += f"⚠️ *NOTA:* Harga pasaran global.\n"
-    msg += f"Semak MT5 anda sebelum entry."
-    return msg
-
-def check_zone_alert(symbol, name):
-    price = get_price(symbol)
-    if price == 0:
-        return False, None, 0, 0, 0
-    df = get_historical_data(symbol)
-    if df is None or len(df) < 20:
-        return False, None, 0, 0, 0
-    closes = df["close"].tolist()
-    rsi = calculate_rsi(closes)
-    ema9 = calculate_ema(closes, 9)
-    ema21 = calculate_ema(closes, 21)
-    st = calculate_supertrend(df)
-    bb_u, bb_l = calculate_bollinger(closes)
-    sl_p = 10 if name == "GOLD" else 300
-    tp_p = 20 if name == "GOLD" else 600
-
-    # Kira zone entry
-    buy_entry = round(bb_l + (price - bb_l) * 0.3, 2)
-    sell_entry = round(bb_u - (bb_u - price) * 0.3, 2)
-
-    # Alert BUY: Harga dekat zone BUY + RSI oversold atau EMA bullish
-    if price <= buy_entry * 1.002 and (rsi < 45 or ema9 > ema21):
-        return True, "BUY", buy_entry, round(buy_entry + tp_p, 2), round(buy_entry - sl_p, 2)
-
-    # Alert SELL: Harga dekat zone SELL + RSI overbought atau EMA bearish
-    elif price >= sell_entry * 0.998 and (rsi > 55 or ema9 < ema21):
-        return True, "SELL", sell_entry, round(sell_entry - tp_p, 2), round(sell_entry + sl_p, 2)
-
-    return False, None, 0, 0, 0
+        r = requests.get("https://query1.finance.yahoo.com/v8/f
